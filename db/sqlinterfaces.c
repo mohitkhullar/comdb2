@@ -7659,6 +7659,7 @@ int handle_http_requests(struct thr_handle *thr_self,
    pthread_cond_init(&clnt.wait_cond, NULL);
    pthread_mutex_init(&clnt.write_lock, NULL);
    
+   reset_clnt(&clnt, sb, 1);
    
    clnt.osql.count_changes = 1;
    clnt.dbtran.mode = tdef_to_tranlevel(SQL_TDEF_SOCK);
@@ -7698,7 +7699,6 @@ int handle_http_requests(struct thr_handle *thr_self,
    }
 
    
-   reset_clnt(&clnt, sb, 1);
    clnt.sql = query;
    clnt.is_http = 1;
    if (!clnt.in_client_trans) {
