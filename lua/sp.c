@@ -157,6 +157,7 @@ static int db_column_type(lua_State *lua);
 static int db_num_columns(lua_State *lua);
 static int db_trace(lua_State *lua);
 static int db_print(lua_State *lua);
+static int db_writesock(lua_State *lua);
 static int db_isnull(lua_State *lua);
 static int db_setnull(Lua);
 static int db_settyped(Lua);
@@ -3831,6 +3832,35 @@ static int db_copyrow(Lua lua)
  return 1;
 }
 
+static int db_writesock(Lua lua)
+{
+    int nargs = lua_gettop(lua);
+    struct fsqlresp rsp;
+    const char *trace;
+    int rc;
+
+    if (nargs > 2)
+       return luabb_error(lua, NULL,"wrong number of  arguments %d", nargs);
+
+    SP sp = getsp(lua);
+    trace = lua_tostring(lua, -1);
+
+    if(trace == NULL) {
+        blob_t blb;
+        luabb_toblob(lua, -1, &blb);
+        printf("Writing blob of length %d\n",blb.length);
+        rc = fsql_write_response(sp->clnt, NULL, blb.data, blb.length+1, 1, __func__, __LINE__);
+        if (rc)
+           return luabb_error(lua, sp,  "%s: couldn't write to socket", __func__);
+        return 0;    
+    }
+    rc = fsql_write_response(sp->clnt, NULL, (char*) trace, strlen(trace)+1, 1, __func__, __LINE__);
+    if (rc)
+       return luabb_error(lua, sp,  "%s: couldn't write to socket", __func__);
+
+    return 0;
+}
+
 static int db_print(Lua lua)
 {
     int nargs = lua_gettop(lua);
@@ -4191,6 +4221,7 @@ static const luaL_Reg db_funcs[] = {
     { "get_trans", db_get_trans },
     { "copyrow", db_copyrow },
     { "print", db_print },
+    { "write", db_writesock },
     { "isnull", db_isnull },
     { "setnull", db_setnull },
     { "settyped", db_settyped },

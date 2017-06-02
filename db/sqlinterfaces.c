@@ -7604,6 +7604,168 @@ retry:
     return written;
 }
 
+int handle_http_requests(struct thr_handle *thr_self, 
+   SBUF2 *sb, char *req)
+{
+   int rc = 0;
+   int do_master_check = 1;
+
+   char query[1000];
+
+   /* Make lua proc */
+   sprintf(query, "exec procedure run_http_request('%s')", req);
+    
+   struct sqlthdstate thd;
+   struct sqlclntstate clnt;
+
+   if (thedb->rep_sync == REP_SYNC_NONE)
+       do_master_check = 0;
+
+   if (do_master_check && bdb_master_should_reject(thedb->bdb_env) && (clnt.ctrl_sqlengine == SQLENG_NORMAL_PROCESS))
+   {
+       fprintf( stderr, "new query on master, dropping socket\n");
+       goto done;
+   }
+
+    if (active_appsock_conns > bdb_attr_get(thedb->bdb_attr, BDB_ATTR_MAXAPPSOCKSLIMIT)) {
+        fprintf( stderr, "%s: Exhausted appsock connections, total %d connections \n",__func__, active_appsock_conns);
+        char *err = "Exhausted appsock connections.";
+        struct fsqlresp      resp;
+        bzero(&resp, sizeof(resp));
+        resp.response = FSQL_ERROR;
+        resp.rcode = SQLHERR_APPSOCK_LIMIT;
+        rc = fsql_write_response(&clnt, &resp, err, strlen(err)+1, 1,
+                                 __func__, __LINE__);
+        goto done;
+   }
+
+
+   /* avoid new accepting new queries/transaction on opened connections 
+      if we are incoherent (and not in a transaction). */
+   if (!bdb_am_i_coherent(thedb->bdb_env) && (clnt.ctrl_sqlengine == SQLENG_NORMAL_PROCESS))
+   {
+      fprintf( stderr, "new query on incoherent node, dropping socket\n");
+      goto done;
+   }
+
+
+   /*printf("\n Query %s length %d" , sql_query->sql_query.data, sql_query->sql_query.len);*/
+
+   int rdtimeoutsec;
+   int wrtimeoutsec;
+   
+
+   pthread_mutex_init(&clnt.wait_mutex, NULL);
+   pthread_cond_init(&clnt.wait_cond, NULL);
+   pthread_mutex_init(&clnt.write_lock, NULL);
+   
+   
+   clnt.osql.count_changes = 1;
+   clnt.dbtran.mode = tdef_to_tranlevel(SQL_TDEF_SOCK);
+   if (gbl_sqlrdtimeoutms == 0)
+      rdtimeoutsec = 0;
+   else
+      rdtimeoutsec = gbl_sqlwrtimeoutms / 1000;
+   
+   if (gbl_sqlwrtimeoutms == 0)
+      wrtimeoutsec = 0;
+   else
+      wrtimeoutsec = gbl_sqlwrtimeoutms / 1000;
+   
+   thd.logger = thrman_get_reqlogger(thr_self);
+   thd.buf = NULL;
+   thd.maxbuflen = 0;
+   thd.cinfo = NULL;
+   thd.offsets = NULL;
+   thd.thr_self = thr_self;
+   thd.sqldb = NULL;
+   thd.stmt_table = NULL;
+   thd.param_stmt_head = NULL;
+   thd.param_stmt_tail = NULL;
+   thd.noparam_stmt_head = NULL;
+   thd.noparam_stmt_tail = NULL;
+   thd.param_cache_entries = 0;
+   thd.noparam_cache_entries = 0;
+
+
+
+   /* appsock threads aren't sql threads so for appsock pool threads
+    * thd.sqlthd will be NULL */
+   thd.sqlthd = pthread_getspecific(query_info_key);
+   if (thd.sqlthd) 
+   {
+      bzero(&thd.sqlthd->sqlclntstate->conninfo, sizeof(struct conninfo));
+   }
+
+   
+   reset_clnt(&clnt, sb, 1);
+   clnt.sql = query;
+   clnt.is_http = 1;
+   if (!clnt.in_client_trans) {
+     bzero(&clnt.effects, sizeof(clnt.effects));
+     bzero(&clnt.log_effects, sizeof(clnt.log_effects));
+   }
+   clnt.is_newsql = 0;
+   clnt.sql_query = NULL;
+   clnt.heartbeat = 0;
+   clnt.verifyretry_off = 1;
+
+
+   clnt.query = NULL;
+   clnt.added_to_hist  = 0;
+
+   /* avoid new accepting new queries/transaction on opened connections 
+      if we are incoherent (and not in a transaction). */
+   if (!bdb_am_i_coherent(thedb->bdb_env) && (clnt.ctrl_sqlengine == SQLENG_NORMAL_PROCESS))
+   {
+      fprintf( stderr, "new query on incoherent node, dropping socket\n");
+       goto done;
+   }
+
+   clnt.heartbeat = 0;
+
+   rc = dispatch_sql_query(&clnt);
+
+   pthread_mutex_unlock(&clnt.wait_mutex);
+
+done:
+   if(clnt.ctrl_sqlengine == SQLENG_INTRANS_STATE)
+   {
+      handle_sql_intrans_unrecoverable_error(&clnt);
+   }
+
+   if(osql_unregister_sqlthr(&clnt))
+      fprintf(stderr, "%s: unable to unregister blocksql thread %llx\n", 
+         __func__, clnt.osql.rqid);
+
+   osql_clean_sqlclntstate( &clnt);
+
+   if (clnt.dbglog) {
+       sbuf2close(clnt.dbglog);
+       clnt.dbglog = NULL;
+   }
+
+   if (clnt.query) {
+      if (clnt.added_to_hist == 1) {
+         clnt.query  = NULL;
+      } else {
+         cdb2__query__free_unpacked(clnt.query, NULL);
+         clnt.query  = NULL;
+      }
+   }
+
+   
+   clnt.dbtran.mode = TRANLEVEL_INVALID;
+   if (clnt.query_stats)
+       free(clnt.query_stats);
+
+   pthread_mutex_destroy(&clnt.wait_mutex);
+   pthread_cond_destroy(&clnt.wait_cond);
+   pthread_mutex_destroy(&clnt.write_lock);
+
+   return 0;
+ }
+
 int handle_newsql_requests(struct thr_handle *thr_self, SBUF2 *sb,
                            int *keepsocket)
 {

@@ -230,6 +230,8 @@ int handle_newsql_requests(struct thr_handle *thr_self, SBUF2 *sb,
 /* int handle_dbinfo_requests(struct thr_handle *thr_self, SBUF2 *sb, int
  * *keepsock);*/
 
+int handle_http_requests(struct thr_handle *thr_self, SBUF2 *sb, char *req);
+
 int sql_check_errors(struct sqlclntstate *clnt, sqlite3 *sqldb,
                      sqlite3_stmt *stmt, const char **errstr);
 

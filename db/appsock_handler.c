@@ -106,6 +106,7 @@ static size_t num_commands = 0;
 
 static const struct appsock_cmd *cmd_fastsql;
 static const struct appsock_cmd *cmd_newsql;
+static const struct appsock_cmd *cmd_GET;
 static const struct appsock_cmd *cmd_version;
 static const struct appsock_cmd *cmd_help;
 static const struct appsock_cmd *cmd_explain;
@@ -158,6 +159,7 @@ int appsock_init(void)
     cmd_explain = add_command("explain");
     cmd_fastsql = add_command("fastsql");
     cmd_newsql = add_command("newsql");
+    cmd_GET = add_command("GET");
     cmd_version = add_command("version");
     cmd_help = add_command("help");
     cmd_whomaster = add_command("whomaster");
@@ -525,6 +527,30 @@ static void *thd_appsock_int(SBUF2 *sb, int *keepsocket,
             handle_newsql_requests(thr_self, sb, keepsocket);
 
             break;
+        } else if (cmd == cmd_GET) {
+            printf("Got GET request %s\n", line);
+
+          if (!bdb_am_i_coherent(thedb->bdb_env) )
+               break;
+
+            /* there are points when we can't accept any more connections. */
+            if (dbenv->no_more_sql_connections) {
+               break;
+            }
+
+            /* if we are NOT the master, and the db is set up for async replication,
+               we should return an error at this point rather than proceed with
+               potentially incoherent data. */
+            if (thedb->rep_sync == REP_SYNC_NONE && thedb->master != gbl_mynode)
+                break;
+
+            /* New way.  Do the basic socket I/O in line in this thread
+             * (which has a very small stack); the handle_fastsql_requests
+             * function will dispatch to a pooled sql engine for performing
+             * queries. */
+            thrman_change_type(thr_self, THRTYPE_APPSOCK_SQL);
+            handle_http_requests(thr_self, sb, line+4);
+            break;                        
         } else if (cmd == cmd_remcur) {
             rc = handle_remcur(sb, dbenv);
             *keepsocket = 0;

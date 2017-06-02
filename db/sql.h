@@ -432,6 +432,7 @@ struct sqlclntstate {
     int send_one_row;
     int verify_retries; /* how many verify retries we've borne */
     int verifyretry_off;
+    int is_http;
     int pageordertablescan;
     int snapshot; /* snapshot epoch placeholder */
     int snapshot_file;
