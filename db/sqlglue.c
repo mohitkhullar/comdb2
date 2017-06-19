@@ -8747,6 +8747,13 @@ done:
     return rc;
 }
 
+int sqlite3BtreeNoOpenNext(BtCursor *pCur, int *pRes)
+{
+    if (!pCur->is_btree_count)
+         pCur->is_btree_count = 1;
+    return sqlite3BtreeNext(pCur, pRes);
+}
+
 /*
 ** Advance the cursor to the next entry in the database.  If
 ** successful then set *pRes=0.  If the cursor

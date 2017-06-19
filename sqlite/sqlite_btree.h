@@ -304,6 +304,7 @@ int sqlite3BtreeInsert(BtCursor*, const BtreePayload *pPayload,
 int sqlite3BtreeFirst(BtCursor*, int *pRes);
 int sqlite3BtreeLast(BtCursor*, int *pRes);
 int sqlite3BtreeNext(BtCursor*, int *pRes);
+int sqlite3BtreeNoOpenNext(BtCursor*, int *pRes);
 int sqlite3BtreeEof(BtCursor*);
 int sqlite3BtreePrevious(BtCursor*, int *pRes);
 i64 sqlite3BtreeIntegerKey(BtCursor*);

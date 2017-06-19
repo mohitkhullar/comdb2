@@ -632,6 +632,11 @@ static void resolveP2Values(Vdbe *p, int *pMaxFuncArgs){
           pOp->p4type = P4_ADVANCE;
           break;
         }
+        case OP_AggStep0: {
+          if ((pOp->p5 == 0) && ((pOp+1)->p4.xAdvance ==  sqlite3BtreeNext))
+              (pOp+1)->p4.xAdvance = sqlite3BtreeNoOpenNext;
+          break;
+        }
         case OP_Prev:
         case OP_PrevIfOpen: {
           pOp->p4.xAdvance = sqlite3BtreePrevious;
