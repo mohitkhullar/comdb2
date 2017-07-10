@@ -407,6 +407,10 @@ int gbl_maxblockops = 25000;
 int gbl_replicate_local = 0;
 int gbl_replicate_local_concurrent = 0;
 
+int gbl_poll_rep_remote = 0;
+char gbl_remote_database[128];
+char gbl_remote_cluster[128];
+
 /* TMP BROKEN DATETIME */
 int gbl_allowbrokendatetime = 1;
 int gbl_sort_nulls_correctly = 1;
@@ -3713,6 +3717,16 @@ static int read_lrl_option(struct dbenv *dbenv, char *line, void *p, int len)
         gbl_lclpooled_buffers = toknum(tok, ltok);
         logmsg(LOGMSG_INFO, "setting gbl_lclpooled_buffers to %d\n",
                gbl_lclpooled_buffers);
+    } else if (tokcmp(tok, ltok, "rep_remote") == 0) {
+        tok = segtok(line, len, &st, &ltok);
+        if (tok != NULL) {
+            strncpy0(gbl_remote_cluster, tok, ltok+1);
+        }
+        tok = segtok(line, len, &st, &ltok);
+        if (tok != NULL) {
+            strncpy0(gbl_remote_database, tok, ltok+1);
+        }
+        gbl_poll_rep_remote = 1;
     }
     else if (tokcmp(tok, ltok, "maxblockops") == 0) {
         tok = segtok(line, len, &st, &ltok);
