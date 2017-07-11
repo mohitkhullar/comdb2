@@ -3720,11 +3720,11 @@ static int read_lrl_option(struct dbenv *dbenv, char *line, void *p, int len)
     } else if (tokcmp(tok, ltok, "rep_remote") == 0) {
         tok = segtok(line, len, &st, &ltok);
         if (tok != NULL) {
-            strncpy0(gbl_remote_cluster, tok, ltok+1);
+            strncpy0(gbl_remote_cluster, tok, ltok + 1);
         }
         tok = segtok(line, len, &st, &ltok);
         if (tok != NULL) {
-            strncpy0(gbl_remote_database, tok, ltok+1);
+            strncpy0(gbl_remote_database, tok, ltok + 1);
         }
         gbl_poll_rep_remote = 1;
     }

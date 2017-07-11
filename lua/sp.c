@@ -6662,7 +6662,7 @@ void *exec_repsp()
         get_curtran(thedb->bdb_env, &clnt);
         SP sp = clnt.sp;
         Lua L = sp->lua;
-       if ((rc = begin_sp(&clnt, &err)) != 0) {
+        if ((rc = begin_sp(&clnt, &err)) != 0) {
             err = strdup(sp->error);
             goto bad;
         }
@@ -6671,8 +6671,8 @@ void *exec_repsp()
             db_rollback_int(L, &rc);
         bad:
             if (err) {
-              puts(err);
-              free(err);
+                puts(err);
+                free(err);
             }
             sleep(5); // slow down buggy sp from spinning
             break;
