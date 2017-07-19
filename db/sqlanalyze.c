@@ -40,8 +40,6 @@
 /* amount of thread-memory initialized for this thread */
 static int analyze_thread_memory = 1048576;
 
-void reset_clnt(struct sqlclntstate *, SBUF2 *, int initial);
-
 /* global is-running flag */
 volatile int analyze_running_flag = 0;
 static int analyze_abort_requested = 0;
@@ -50,13 +48,13 @@ static int analyze_abort_requested = 0;
 static int sampled_tables_enabled = 1;
 
 /* sampling threshold defaults to 100 Mb */
-static long long sampling_threshold = 104857600;
+long long sampling_threshold = 104857600;
 
 /* hard-maximum number of analyze-table threads */
 static int analyze_hard_max_table_threads = 15;
 
 /* maximum number of analyze-table threads */
-static int analyze_max_table_threads = 5;
+int analyze_max_table_threads = 5;
 
 /* current number of analyze-sampling threads */
 static int analyze_cur_table_threads = 0;
@@ -65,7 +63,7 @@ static int analyze_cur_table_threads = 0;
 static int analyze_hard_max_comp_threads = 40;
 
 /* maximum number of analyze-sampling threads */
-static int analyze_max_comp_threads = 10;
+int analyze_max_comp_threads = 10;
 
 /* current number of analyze-sampling threads */
 static int analyze_cur_comp_threads = 0;
@@ -121,61 +119,6 @@ typedef struct table_descriptor {
     int override_llmeta;
     index_descriptor_t index[MAXINDEX];
 } table_descriptor_t;
-
-static int run_sql(char *sql, SBUF2 *sb)
-{
-    sqlite3 *sqldb;
-    int rc;
-    int crc;
-    int got_curtran = 0;
-    char *msg;
-    struct sql_thread *thd;
-
-    struct sqlclntstate client;
-    reset_clnt(&client, sb, 1);
-    sql_set_sqlengine_state(&client, __FILE__, __LINE__, SQLENG_NORMAL_PROCESS);
-    client.dbtran.mode = TRANLEVEL_SOSQL;
-    client.sql = sql;
-
-    start_sql_thread();
-
-    thd = pthread_getspecific(query_info_key);
-    sql_get_query_id(thd);
-    client.debug_sqlclntstate = pthread_self();
-    thd->sqlclntstate = &client;
-
-    if ((rc = get_curtran(thedb->bdb_env, &client)) != 0) {
-        logmsg(LOGMSG_ERROR, "%s: failed to open a new curtran, rc=%d\n", __func__, rc);
-        goto cleanup;
-    }
-    got_curtran = 1;
-
-    if ((rc = sqlite3_open_serial("db", &sqldb, NULL)) != 0) {
-        logmsg(LOGMSG_ERROR, "%s:sqlite3_open rc %d\n", __func__, rc);
-        goto cleanup;
-    }
-
-    if ((rc = sqlite3_exec(sqldb, sql, NULL, NULL, &msg)) != 0) {
-        logmsg(LOGMSG_ERROR, "query:%s failed rc %d: %s\n", sql, rc,
-               msg ? msg : "<unknown error>");
-        goto cleanup;
-    }
-    thd->sqlclntstate = NULL;
-
-    if ((crc = sqlite3_close(sqldb)) != 0)
-        logmsg(LOGMSG_ERROR, "close rc %d\n", crc);
-
-cleanup:
-    if (got_curtran) {
-        crc = put_curtran(thedb->bdb_env, &client);
-        if (crc)
-            logmsg(LOGMSG_ERROR, "%s: failed to close curtran\n", __func__);
-    }
-
-    thd->sqlclntstate = NULL;
-    done_sql_thread();
-    return rc;
-}
 
 /* loadStat4 (analyze.c) will ignore all stat entries
  * which have "tbl like 'cdb2.%' */
@@ -525,6 +468,8 @@ int analyze_get_nrecs(int iTable)
     /* retrieve table pointer  */
     if (tblnum < thedb->num_dbs) {
         db = thedb->dbs[tblnum];
+    } else {
+        return -1;
     }
 
     /* grab sampled table descriptor */
@@ -576,7 +521,7 @@ int analyze_is_sampled(struct sqlclntstate *client, char *table, int idx)
 static int local_replicate_write_analyze(char *table)
 {
     int rc;
-    void *trans = NULL;
+    tran_type *trans = NULL;
     long long seqno;
     int nretries = 0;
     struct ireq iq;
@@ -611,7 +556,7 @@ again:
     }
 
     if (gbl_replicate_local_concurrent) {
-        unsigned int useqno;
+        unsigned long long useqno;
         useqno = bdb_get_timestamp(thedb->bdb_env);
         memcpy(&seqno, &useqno, sizeof(seqno));
     } else
@@ -894,213 +839,6 @@ cleanup:
 error:
     run_internal_sql_clnt(&clnt, "ROLLBACK");
     goto cleanup;
-}
-
-static int analyze_table_int_old(table_descriptor_t *td,
-                                 struct thr_handle *thr_self)
-{
-    char *table = td->table;
-    SBUF2 *sb = td->sb;
-    int scale = td->scale;
-    int override_llmeta = td->override_llmeta;
-    int rc;
-    int sampled_table = 0;
-    int64_t totsiz;
-    char sql[128];
-    struct sqlclntstate client;
-    struct db *tbl;
-
-#ifdef DEBUG
-    printf("analyze_table_int_old() table '%s': scale %d\n", table, scale);
-#endif
-
-    /* make sure we can find this table */
-    tbl = getdbbyname(table);
-    if (!tbl) {
-        sbuf2printf(sb, "?Cannot find table '%s'\n", table);
-        return -1;
-    }
-
-    if (override_llmeta == 0) // user did not specify override parameter
-        get_saved_scale(table, &scale);
-
-    if (scale == 0) {
-        logmsg(LOGMSG_INFO, "coverage for table table '%s' is 0, skipping analyze\n", table);
-        return TABLE_SKIPPED;
-    }
-
-    /* initialize an sql client-request */
-    reset_clnt(&client, sb, 1);
-    client.osql_max_trans = 0;
-    client.dbtran.mode = TRANLEVEL_SOSQL;
-
-    /* grab the size of the table */
-    totsiz = calc_table_size_analyze(tbl);
-
-    if (sampled_tables_enabled)
-        get_sampling_threshold(table, &sampling_threshold);
-
-    /* sample if enabled & large */
-    if (sampled_tables_enabled && totsiz > sampling_threshold) {
-        logmsg(LOGMSG_INFO, "Sampling table '%s' at %d%% coverage\n", table, scale);
-        sampled_table = 1;
-        rc = sample_indicies(td, &client, tbl, scale, sb);
-        if (rc)
-            goto cleanup;
-    }
-
-    logmsg(LOGMSG_INFO, "Analyze thread starting, table %s (%d%%)\n", table, scale);
-
-    struct sqlthdstate sqlthd;
-    sqlthd.logger = thrman_get_reqlogger(thr_self);
-    sqlthd.buf = NULL;
-    sqlthd.maxbuflen = 0;
-    sqlthd.ncols = 0;
-    // sqlthd.stmt = NULL;
-    sqlthd.cinfo = NULL;
-    sqlthd.offsets = NULL;
-    sqlthd.sqldb = NULL;
-    sqlthd.stmt_table = NULL;
-    sqlthd.param_stmt_head = NULL;
-    sqlthd.param_stmt_tail = NULL;
-    sqlthd.noparam_stmt_head = NULL;
-    sqlthd.noparam_stmt_tail = NULL;
-    sqlthd.param_cache_entries = 0;
-    sqlthd.noparam_cache_entries = 0;
-
-    sqlite3 *sqldb;
-
-    // do the following as a transaction so on failure we'll simply rollback
-    {
-        sql_set_sqlengine_state(&client, __FILE__, __LINE__,
-                                SQLENG_PRE_STRT_STATE);
-        client.in_client_trans = 1;
-        client.intrans = 1;
-
-        snprintf(sql, sizeof(sql), "BEGIN");
-        client.sql = sql;
-        handle_sql_begin(&sqlthd, &client, 0);
-    }
-
-    struct sql_thread *thd;
-    {
-        sql_set_sqlengine_state(&client, __FILE__, __LINE__,
-                                SQLENG_INTRANS_STATE);
-        thd = start_sql_thread();
-        thd->sqlclntstate = &client;
-        if ((rc = initialize_shadow_trans(&client, thd))) {
-            logmsg(LOGMSG_ERROR, "initalize shadow trans failed");
-            goto onerr;
-        }
-        client.debug_sqlclntstate = pthread_self();
-
-        get_copy_rootpages(thd);
-    }
-
-    int got_curtran = 0;
-    {
-        /* get a curtran */
-        rc = get_curtran(thedb->bdb_env, &client);
-        if (rc) {
-            logmsg(LOGMSG_ERROR, "%s: failed to open a new curtran, rc=%d\n",
-                    __func__, rc);
-            goto cleanup;
-        }
-        /* deallocate this at the end */
-        got_curtran = 1;
-
-        /* open sql engine */
-        rc = sqlite3_open_serial("db", &sqldb, NULL);
-        if (rc) {
-           logmsg(LOGMSG_ERROR, "%s:sqlite3_open rc %d\n", __func__, rc);
-            goto cleanup;
-        }
-    }
-
-    if (getdbbyname("sqlite_stat1")) {
-        rc = delete_sav(sqldb, &client, sb, 1, table);
-        if (rc)
-            goto onerr;
-
-        rc = update_sav(sqldb, &client, sb, 1, table);
-        if (rc)
-            goto onerr;
-    }
-
-    if (getdbbyname("sqlite_stat2")) {
-        rc = delete_sav(sqldb, &client, sb, 2, table);
-        if (rc)
-            goto onerr;
-
-        rc = update_sav(sqldb, &client, sb, 2, table);
-        if (rc)
-            goto onerr;
-    }
-
-    if (getdbbyname("sqlite_stat4")) {
-        rc = delete_sav(sqldb, &client, sb, 4, table);
-        if (rc)
-            goto onerr;
-
-        rc = update_sav(sqldb, &client, sb, 4, table);
-        if (rc)
-            goto onerr;
-    }
-
-    client.is_analyze = 1;
-    /* run analyze as sql query */
-    snprintf(sql, sizeof(sql), "analyzesqlite main.\"%s\"", table);
-    rc = run_sql_part_trans(sqldb, &client, sql, NULL);
-
-onerr:
-
-#ifdef DEBUG
-    printf("rc IS %d\n", rc);
-#endif
-    /* commit or rollback */
-
-    if (rc == 0) {
-        sql_set_sqlengine_state(&client, __FILE__, __LINE__, SQLENG_FNSH_STATE);
-        snprintf(sql, sizeof(sql), "COMMIT");
-        client.sql = sql;
-        rc = handle_sql_commitrollback(&sqlthd, &client, 0);
-        if (rc) {
-            logmsg(LOGMSG_ERROR, "commit rc = %d\n", rc);
-        } else
-           logmsg(LOGMSG_INFO, "Analyze-Table completed successfully, table %s\n", table);
-    } else {
-        sql_set_sqlengine_state(&client, __FILE__, __LINE__,
-                                SQLENG_FNSH_RBK_STATE);
-        snprintf(sql, sizeof(sql), "ROLLBACK");
-        client.sql = sql;
-        int rrc = handle_sql_commitrollback(&sqlthd, &client, 0);
-        if (rrc) {
-            logmsg(LOGMSG_ERROR, "rollback rc = %d\n", rrc);
-        }
-        logmsg(LOGMSG_ERROR, "Analyze-Table failed.\n");
-    }
-
-    /* close sql engine */
-    int crc = sqlite3_close(sqldb);
-    if (crc)
-        logmsg(LOGMSG_ERROR, "close rc %d\n", crc);
-
-cleanup:
-    if (got_curtran) {
-        crc = put_curtran(thedb->bdb_env, &client);
-        if (crc)
-            logmsg(LOGMSG_ERROR, "%s: failed to close curtran\n", __func__);
-    }
-
-    thd->sqlclntstate = NULL;
-    done_sql_thread();
-
-    /* cleanup */
-    if (sampled_table) {
-        cleanup_sampled_indicies(&client, tbl);
-    }
-
-    return rc;
 }
 
 /* spawn thread to analyze a table */
@@ -1405,13 +1143,16 @@ void analyze_enable_sampled_indicies(void) { sampled_tables_enabled = 1; }
 void analyze_disable_sampled_indicies(void) { sampled_tables_enabled = 0; }
 
 /* set sampling threshold */
-int analyze_set_sampling_threshold(long long thresh)
+int analyze_set_sampling_threshold(void *context, void *thresh)
 {
-    if (thresh < 0) {
-        logmsg(LOGMSG_ERROR, "%s: invalid value for sampling threshold\n", __func__);
-        return -1;
+    long long _thresh = *(int *)thresh;
+
+    if (_thresh < 0) {
+        logmsg(LOGMSG_ERROR, "%s: Invalid value for sampling threshold\n",
+               __func__);
+        return 1;
     }
-    sampling_threshold = thresh;
+    sampling_threshold = _thresh;
     return 0;
 }
 
@@ -1419,38 +1160,42 @@ int analyze_set_sampling_threshold(long long thresh)
 long long analyze_get_sampling_threshold(void) { return sampling_threshold; }
 
 /* set maximum analyze threads */
-int analyze_set_max_table_threads(int maxthd)
+int analyze_set_max_table_threads(void *context, void *maxthd)
 {
+    int _maxthd = *(int *)maxthd;
+
     /* must have at least 1 */
-    if (maxthd < 1) {
+    if (_maxthd < 1) {
         logmsg(LOGMSG_ERROR, "%s: invalid value for maxthd\n", __func__);
-        return -1;
+        return 1;
     }
     /* can have no more than hard-max */
-    if (maxthd > analyze_hard_max_table_threads) {
+    if (_maxthd > analyze_hard_max_table_threads) {
         logmsg(LOGMSG_ERROR, "%s: hard-maximum is %d\n", __func__,
                analyze_hard_max_table_threads);
-        return -1;
+        return 1;
     }
-    analyze_max_table_threads = maxthd;
+    analyze_max_table_threads = _maxthd;
     return 0;
 }
 
-/* set maximum analyze sampling threads */
-int analyze_set_max_sampling_threads(int maxthd)
+/* Set maximum analyze sampling threads */
+int analyze_set_max_sampling_threads(void *context, void *maxthd)
 {
+    int _maxthd = *(int *)maxthd;
+
     /* must have at least 1 */
-    if (maxthd < 1) {
+    if (_maxthd < 1) {
         logmsg(LOGMSG_ERROR, "%s: invalid value for maxthd\n", __func__);
-        return -1;
+        return 1;
     }
     /* can have no more than hard-max */
-    if (maxthd > analyze_hard_max_comp_threads) {
+    if (_maxthd > analyze_hard_max_comp_threads) {
         logmsg(LOGMSG_ERROR, "%s: hard-maximum is %d\n", __func__,
                analyze_hard_max_comp_threads);
-        return -1;
+        return 1;
     }
-    analyze_max_comp_threads = maxthd;
+    analyze_max_comp_threads = _maxthd;
     return 0;
 }
 

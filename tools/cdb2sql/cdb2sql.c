@@ -107,24 +107,34 @@ void dumpstring(FILE *f, char *s, int quotes, int quote_quotes)
 }
 
 static const char *usage_text =
-    "Usage: cdb2sql [options] dbname [sql [type1 [type2 ...]]]\n"             \
-    "\n"                                                                      \
-    "Basic options:\n"                                                        \
-    "-h                 Help\n"                                               \
-    "-s                 Script mode (less verbose output)\n"                  \
-    "--tabs             Seperate output columns with tabs rather\n"           \
-    "                   than commas\n"                                        \
-    "--cdb2cfg          Change the config file to point to comdb2db\n"        \
-    "                   configuration file\n"                                 \
-    "--type TYPE        Type of database or tier (ie 'dev' or 'prod',\n"      \
-    "                                             default 'local')\n"         \
-    "--host HOSTNAME    Host to connect to and run query.\n"                  \
-    "--debugtrace       Set debug trace flag on api handle\n"                 \
-    "--showeffects      Show the effects of query at the end\n"               \
-    "--cost             Log the cost of query in db trace files\n"            \
-    "--precision #      Set precision for floation point outputs\n"           \
-    "--strblobs         Display blobs as strings\n"                           \
-    "-f filename        reads queries from the specified file\n";
+    "Usage: cdb2sql [options] dbname [sql [type1 [type2 ...]]]\n"
+    "\n"
+    "Options:\n"
+    " -h, --help             Help on usage \n"
+    " -s, --script           Script mode (less verbose output)\n"
+    "     --tabs             Seperate output columns with tabs rather\n"
+    "                        than commas\n"
+    " -c, --cdb2cfg          Change the config file to point to comdb2db\n"
+    "                        configuration file\n"
+    " -t, --type TYPE        Type of database or tier (ie 'dev' or 'prod',\n"
+    "                                              default 'local')\n"
+    " -n, --host HOSTNAME    Host to connect to and run query.\n"
+    "     --debugtrace       Set debug trace flag on api handle\n"
+    "     --showeffects      Show the effects of query at the end\n"
+    "     --cost             Log the cost of query in db trace files\n"
+    " -p, --precision #      Set precision for floation point outputs\n"
+    "     --strblobs         Display blobs as strings\n"
+    " -f, --file FL          reads queries from the specified file FL\n"
+    "\n"
+    " Examples: \n"
+    " * Querying db with name mydb on local server \n"
+    "     cdb2sql mydb 'select 1'\n"
+    " * Query db via interactive session:\n"
+    "     cdb2sql mydb - \n"
+    " * Query db by connecting to a specific server:\n"
+    "     cdb2sql mydb --host node1 'select 1'\n"
+    " * Query db by connecting to a known set of servers/ports:\n"
+    "     cdb2sql mydb @node1:port=19007,node2:port=19000 'select 1'\n";
 
 void cdb2sql_usage(int exit_val)
 {
@@ -219,16 +229,16 @@ void *get_val(const char **sqlstr, int type, int *vallen)
         return NULL;
     }
     if (type == CDB2_INTEGER) {
-        int i = atol(*sqlstr);
-        int *val = malloc(sizeof(int));
+        int64_t i = atol(*sqlstr);
+        int64_t *val = malloc(sizeof(int64_t));
         *val = i;
-        *vallen = sizeof(int);
+        *vallen = sizeof(*val);
         return val;
     } else if (type == CDB2_REAL) {
         double d = atof(*sqlstr);
         double *val = malloc(sizeof(double));
         *val = d;
-        *vallen = sizeof(int);
+        *vallen = sizeof(*val);
         return val;
     } else if (type == CDB2_CSTRING) {
         char *val = strndup(*sqlstr, end - (*sqlstr));
@@ -377,7 +387,7 @@ void printCol(FILE *f, cdb2_hndl_tp *cdb2h, void *val, int col, int printmode)
             fputc('\'', stdout);
         } else {
             if (printmode == BINARY) {
-                int rc = write(1, val, cdb2_column_size(cdb2h, col));
+                write(1, val, cdb2_column_size(cdb2h, col));
                 exit(0);
             } else {
                 fprintf(f, "x'");
@@ -877,6 +887,19 @@ static void replace_args(int argc, char *argv[])
     }
 }
 
+/* If ctrl_c was pressed to clear existing line and go to new line
+ * If we see two ctrl_c in a row we exit.
+ * However, after a ctrl_c if user typed something
+ * (rl_line_buffer is not empty) and then issue a ctrl_c then dont exit.
+ */
+static void int_handler(int signum)
+{
+    printf("\n");
+    rl_on_new_line();
+    rl_replace_line("", 0);
+    rl_redisplay();
+}
+
 int main(int argc, char *argv[])
 {
     static char *filename = NULL;
@@ -1026,8 +1049,12 @@ int main(int argc, char *argv[])
         istty = 1;
     if (isttyarg == 2)
         istty = 0;
-    if (istty)
+    if (istty) {
         load_readline_history();
+        struct sigaction sact;
+        sact.sa_handler = int_handler;
+        sigaction(SIGINT, &sact, NULL);
+    }
     char *line;
     int multi;
     while ((line = read_line()) != NULL) {

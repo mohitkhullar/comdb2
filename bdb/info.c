@@ -89,7 +89,7 @@ static void printf_wrapper(void *userptr, const char *fmt, ...)
     if (!out)
         out = stderr;
     va_start(args, fmt);
-    logmsgf(LOGMSG_USER, out, fmt, args);
+    logmsgvf(LOGMSG_USER, out, fmt, args);
     va_end(args);
 }
 
@@ -216,50 +216,41 @@ int bdb_get_bpool_counters(bdb_state_type *bdb_state, int64_t *bpool_hits,
     return 0;
 }
 
-static char *deadlock_policy_str(int policy)
+const char *deadlock_policy_str(int policy)
 {
-    char *str = "UNKNOWN-POLICY";
     switch (policy) {
-    case DB_LOCK_DEFAULT:
-        return "DB_LOCK_DEFAULT";
-        break;
+    case DB_LOCK_NORUN: return "DB_LOCK_NORUN";
+    case DB_LOCK_DEFAULT: return "DB_LOCK_DEFAULT";
     case DB_LOCK_EXPIRE:
         return "DB_LOCK_EXPIRE";
-        break;
     case DB_LOCK_MAXLOCKS:
         return "DB_LOCK_MAXLOCKS";
-        break;
     case DB_LOCK_MINLOCKS:
         return "DB_LOCK_MINLOCKS";
-        break;
     case DB_LOCK_MINWRITE:
         return "DB_LOCK_MINWRITE";
-        break;
     case DB_LOCK_OLDEST:
         return "DB_LOCK_OLDEST";
-        break;
     case DB_LOCK_RANDOM:
         return "DB_LOCK_RANDOM";
-        break;
     case DB_LOCK_YOUNGEST:
         return "DB_LOCK_YOUNGEST";
-        break;
     case DB_LOCK_MAXWRITE:
         return "DB_LOCK_MAXWRITE";
-        break;
     case DB_LOCK_MINWRITE_NOREAD:
         return "DB_LOCK_MINWRITE_NOREAD";
-        break;
     case DB_LOCK_YOUNGEST_EVER:
         return "DB_LOCK_YOUNGEST_EVER";
-        break;
     case DB_LOCK_MINWRITE_EVER:
         return "DB_LOCK_MINWRITE_EVER";
-        break;
     default:
         return "UNKNOWN_DEADLOCK_POLICY";
-        break;
     }
+}
+
+int deadlock_policy_max()
+{
+    return DB_LOCK_MAX;
 }
 
 static void lock_stats(FILE *out, bdb_state_type *bdb_state)
@@ -1722,18 +1713,18 @@ void bdb_process_user_command(bdb_state_type *bdb_state, char *line, int lline,
         unsigned n_preads = p->n_preads ? p->n_preads : 1;
         unsigned n_pwrites = p->n_pwrites ? p->n_pwrites : 1;
         logmsgf(LOGMSG_USER, out, "  %u lock waits took %u ms (%u ms/wait)\n",
-                p->n_lock_waits, p->lock_wait_time_ms,
-                p->lock_wait_time_ms / n_lock_waits);
-        logmsgf(LOGMSG_USER, out, "  %u preads took %u ms total of %u bytes\n", p->n_preads,
-                p->pread_time_ms, p->pread_bytes);
+                p->n_lock_waits, U2M(p->lock_wait_time_us),
+                U2M(p->lock_wait_time_us / n_lock_waits));
+        logmsgf(LOGMSG_USER, out, "  %u preads took %u ms total of %u bytes\n",
+                p->n_preads, U2M(p->pread_time_us), p->pread_bytes);
         if (p->n_preads > 0)
             logmsgf(LOGMSG_USER, out, "  average pread time %u ms\n",
-                    p->pread_time_ms / n_preads);
+                    U2M(p->pread_time_us) / n_preads);
         logmsgf(LOGMSG_USER, out, "  %u pwrites took %u ms total of %u bytes\n",
-                p->n_pwrites, p->pwrite_time_ms, p->pwrite_bytes);
+                p->n_pwrites, U2M(p->pwrite_time_us), p->pwrite_bytes);
         if (p->n_pwrites > 0)
             logmsgf(LOGMSG_USER, out, "  average pwrite time %u ms\n",
-                    p->pwrite_time_ms / n_pwrites);
+                    U2M(p->pwrite_time_us / n_pwrites));
     }
 
     else if (tokcmp(tok, ltok, "memdump") == 0) {
@@ -1931,6 +1922,16 @@ void lock_info(FILE *out, bdb_state_type *bdb_state, char *line, int st,
 #else
     __lock_print_all(bdb_state->dbenv, flags);
 #endif
+}
+
+void all_locks(bdb_state_type *x)
+{
+    char parm[2] = {0};
+    parm[0] = 'o';
+    __lock_dump_region(x->dbenv, parm, stdout);
+
+    parm[0] = 'l';
+    __lock_dump_region(x->dbenv, parm, stdout);
 }
 
 extern int __qam_extent_names(DB_ENV *dbenv, char *name, char ***namelistp);

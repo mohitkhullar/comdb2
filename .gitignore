@@ -3,6 +3,7 @@ comdb2rle/libcomdb2rle.a
 bb/libbb.a
 bdb/libbdblib.a
 protobuf/libcdb2protobuf.a
+protobuf/libcdb2protobuf.so
 cdb2api/libcdb2api.a
 cdb2api/libcdb2api.so
 csc2/libcsc2lib.a
@@ -241,6 +242,7 @@ mem_*.c
 mem_*.h
 builddeps
 debian
+dbsize
 
 # jdbc driver
 !cdb2jdbc/**
@@ -249,6 +251,8 @@ cdb2jdbc/maven.m2/**
 
 # generated docs
 _site/
+Comdb2.docset
+Gemfile.lock
 
 # test tools
 tests/tools/overflow_blobtest
@@ -276,3 +280,6 @@ docs/sqlitegen/all.html
 docs/sqlitegen/syntax_linkage.tcl
 docker/maven.m2/
 contrib/docker/build
+
+# editor files
+.vscode

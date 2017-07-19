@@ -242,6 +242,38 @@ tran_type *bdb_start_ltran_rep_sc(bdb_state_type *bdb_state,
     return tran;
 }
 
+/* This allows the scdone 'rep-transaction' to gather locks using gbl_rep_lockid
+ */
+void bdb_set_tran_lockerid(tran_type *tran, uint32_t lockerid)
+{
+    if (tran->tranclass == TRANCLASS_LOGICAL) {
+        tran->logical_lid = lockerid;
+    } else {
+        tran->tid->txnid = lockerid;
+    }
+}
+
+void bdb_get_tran_lockerid(tran_type *tran, uint32_t *lockerid)
+{
+    if (tran->tranclass == TRANCLASS_LOGICAL) {
+        (*lockerid) = tran->logical_lid;
+    } else {
+        (*lockerid) = tran->tid->txnid;
+    }
+}
+
+void *bdb_get_physical_tran(tran_type *ltran)
+{
+    assert(ltran->tranclass == TRANCLASS_LOGICAL);
+    return ltran->physical_tran;
+}
+
+void bdb_ltran_get_schema_lock(tran_type *ltran)
+{
+    ltran->get_schema_lock = 1;
+    ltran->single_physical_transaction = 1;
+}
+
 /* Create a txn and add to the txn list.  Called directly from the replication
  * stream.  */
 tran_type *bdb_start_ltran(bdb_state_type *bdb_state,
@@ -1177,8 +1209,7 @@ static tran_type *bdb_tran_begin_berk_int(bdb_state_type *bdb_state,
 }
 
 tran_type *bdb_tran_begin_shadow_int(bdb_state_type *bdb_state, int tranclass,
-                                     int ignore_newer_updates, int trak,
-                                     int *bdberr, int epoch, int file,
+                                     int trak, int *bdberr, int epoch, int file,
                                      int offset)
 {
     tran_type *tran;
@@ -1231,7 +1262,6 @@ tran_type *bdb_tran_begin_shadow_int(bdb_state_type *bdb_state, int tranclass,
     tran->asof_hashtbl = NULL;
 
     if (tran) {
-        tran->ignore_newer_updates = ignore_newer_updates;
         tran->trak = trak;
 
         if (tran->tranclass == TRANCLASS_SNAPISOL ||
@@ -1374,63 +1404,32 @@ tran_type *bdb_tran_begin_set_retries(bdb_state_type *bdb_state,
     return tran;
 }
 
-tran_type *bdb_tran_begin_readcommitted(bdb_state_type *bdb_state,
-                                        int ignore_newer_updates, int trak,
+tran_type *bdb_tran_begin_readcommitted(bdb_state_type *bdb_state, int trak,
                                         int *bdberr)
 {
-    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_READCOMMITTED,
-                                     ignore_newer_updates, trak, bdberr, 0, 0,
-                                     0);
+    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_READCOMMITTED, trak,
+                                     bdberr, 0, 0, 0);
 }
 
-tran_type *bdb_tran_begin_socksql(bdb_state_type *bdb_state,
-                                  int ignore_newer_updates, int trak,
+tran_type *bdb_tran_begin_socksql(bdb_state_type *bdb_state, int trak,
                                   int *bdberr)
 {
-    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_SOSQL,
-                                     ignore_newer_updates, trak, bdberr, 0, 0,
-                                     0);
+    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_SOSQL, trak, bdberr,
+                                     0, 0, 0);
 }
 
 tran_type *bdb_tran_begin_snapisol(bdb_state_type *bdb_state, int trak,
                                    int *bdberr, int epoch, int file, int offset)
 {
-    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_SNAPISOL, 1, trak,
+    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_SNAPISOL, trak,
                                      bdberr, epoch, file, offset);
 }
 
 tran_type *bdb_tran_begin_serializable(bdb_state_type *bdb_state, int trak,
                                        int *bdberr, int epoch, int file, int offset)
 {
-    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_SERIALIZABLE, 1, trak,
+    return bdb_tran_begin_shadow_int(bdb_state, TRANCLASS_SERIALIZABLE, trak,
                                      bdberr, epoch, file, offset);
-}
-
-tran_type *bdb_tran_begin_queryisolation(bdb_state_type *bdb_state, int trak,
-                                         int *bdberr)
-{
-    tran_type *tran = NULL;
-    int rc = 0;
-
-    if (bdb_state->parent)
-        bdb_state = bdb_state->parent;
-
-    *bdberr = BDBERR_NOERROR;
-
-    tran = mymalloc(sizeof(tran_type));
-    bzero(tran, sizeof(tran_type));
-
-    tran->tranclass = TRANCLASS_QUERYISOLATION;
-    tran->threadid = pthread_self();
-    tran->startgenid = bdb_get_commit_genid(
-        bdb_state, &tran->snapy_commit_lsn); /*get_gblcontext(bdb_state);*/
-    tran->ignore_newer_updates = 1;
-    tran->trak = trak;
-
-    if (tran->trak)
-        logmsg(LOGMSG_USER, "TRK_TRAN: began QI transaction %p\n", tran);
-
-    return tran;
 }
 
 /*
@@ -2643,38 +2642,6 @@ int bdb_get_lsn_lwm(bdb_state_type *bdb_state, DB_LSN *lsnout)
 int bdb_get_lid_from_cursortran(cursor_tran_t *curtran)
 {
     return curtran->lockerid;
-}
-
-int bdb_tran_commit_queryisolation(bdb_state_type *bdb_state, tran_type *tran,
-                                   int *bdberr)
-{
-    if (tran->trak)
-        logmsg(LOGMSG_USER, "TRK_TRAN: committed %p (type=%d)\n", tran,
-                tran->tranclass);
-
-    *bdberr = 0;
-    if (tran->table_version_cache)
-        free(tran->table_version_cache);
-    tran->table_version_cache = NULL;
-    memset((char *)tran, 0xFF, sizeof(tran));
-    free(tran);
-    return 0;
-}
-
-int bdb_tran_abort_queryisolation(bdb_state_type *bdb_state, tran_type *tran,
-                                  int *bdberr)
-{
-    if (tran->trak)
-        logmsg(LOGMSG_USER, "TRK_TRAN: committed %p (type=%d)\n", tran,
-                tran->tranclass);
-
-    *bdberr = 0;
-    if (tran->table_version_cache)
-        free(tran->table_version_cache);
-    tran->table_version_cache = NULL;
-    memset((char *)tran, 0xFF, sizeof(tran));
-    free(tran);
-    return 0;
 }
 
 int bdb_add_rep_blob(bdb_state_type *bdb_state, tran_type *tran, int session,

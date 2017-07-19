@@ -254,7 +254,8 @@ static const char *HELP_SQL[] = {
     "dump               - dump currently running statements and cursor info",
     "keep N             - keep stats on last N statements",
     "hist               - show recently run statements",
-    "cancel N           - cancel running statement",
+    "cancel N           - cancel running statement with id N",
+    "cancelcnonce N      - cancel running statement with cnonce N",
     "rdtimeout N        - set read timeout in ms",
     "wrtimeout N        - set write timeout in ms",
     "help               - this information", NULL,
@@ -628,57 +629,6 @@ static void on_off_trap(char *line, int lline, int *st, int *ltok, char *msg,
     }
 }
 
-char *deadlock_policy_str(int policy)
-{
-    switch (policy) {
-    case 0:
-        return "DB_LOCK_NORUN";
-        break;
-
-    case 1:
-        return "DB_LOCK_DEFAULT";
-        break;
-
-    case 2:
-        return "DB_LOCK_EXPIRE";
-        break;
-
-    case 3:
-        return "DB_LOCK_MAXLOCKS";
-        break;
-    case 4:
-        return "DB_LOCK_MINLOCKS";
-        break;
-    case 5:
-        return "DB_LOCK_MINWRITE";
-        break;
-    case 6:
-        return "DB_LOCK_OLDEST";
-        break;
-    case 7:
-        return "DB_LOCK_RANDOM";
-        break;
-    case 8:
-        return "DB_LOCK_YOUNGEST";
-        break;
-    case 9:
-        return "DB_LOCK_MAXWRITE";
-        break;
-    case 10:
-        return "DB_LOCK_MINWRITE_NOREAD";
-        break;
-    case 11:
-        return "DB_LOCK_YOUNGEST_EVER";
-        break;
-    case 12:
-        return "DB_LOCK_MINWRITE_EVER";
-        break;
-    default:
-        return "INVALID_POLICY";
-        break;
-    }
-}
-
 extern int gbl_new_snapisol;
 #ifdef NEWSI_STAT
 void bdb_print_logfile_pglogs_stat();
@@ -698,11 +648,10 @@ void *handle_exit_thd(void *arg)
     pthread_mutex_unlock(&exiting_lock);
 
     struct dbenv *dbenv = arg;
-    int qid, dbnum, alarmtime = (gbl_exit_alarm_sec > 0 ? gbl_exit_alarm_sec : 300);
+    int qid, alarmtime = (gbl_exit_alarm_sec > 0 ? gbl_exit_alarm_sec : 300);
 
     /* this defaults to 5 minutes */
     alarm(alarmtime);
-
 
     if (bdb_is_an_unconnected_master(dbenv->dbs[0]->handle)) {
        logmsg(LOGMSG_INFO, "This was standalone\n");
@@ -736,8 +685,6 @@ void *handle_exit_thd(void *arg)
         for (ii = 0; ii < thedb->num_qdbs; ii++)
             dbqueue_stat(thedb->qdbs[ii], 0, 0, 1 /*(blocking call)*/);
     }
-
-    dbnum = dbenv->dbnum;
 
     bdb_thread_event(thedb->bdb_env, BDBTHR_EVENT_START_RDWR);
     flush_db();
@@ -2598,7 +2545,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
         }
 
         /* and here we go... */
-        rc = change_schema(dbenv, table, fname, odh, compress, compress_blobs);
+        rc = change_schema(table, fname, odh, compress, compress_blobs);
         if (rc != 0) {
             if (rc == -99)
                 logmsg(LOGMSG_ERROR, 
@@ -3376,7 +3323,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
             return -1;
         }
         gbl_sbuftimeout = tmout;
-        set_sbuftimeout(gbl_sbuftimeout);
+        bdb_attr_set(thedb->bdb_attr, BDB_ATTR_SBUFTIMEOUT, gbl_sbuftimeout);
     } else if (tokcmp(tok, ltok, "sqldbgtrace") == 0) {
         int dbgflag;
         tok = segtok(line, lline, &st, &ltok);
@@ -3616,6 +3563,15 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
                        "\"sql dump\".\n");
             else
                 cancel_sql_statement(qid);
+        } else if (tokcmp(tok, ltok, "cancelcnonce") == 0) {
+            tok = segtok(line, lline, &st, &ltok);
+            if (ltok == 0)
+                logmsg(LOGMSG_ERROR, "Usage: sql cancelcnonce CNONCE.  You can get cnonce with "
+                       "\"sql dump\".\n");
+            else {
+                char * cnonce = strdup(tok);
+                cancel_sql_statement_with_cnonce(cnonce);
+            }
         } else if (tokcmp(tok, ltok, "rdtimeout") == 0) {
             tok = segtok(line, lline, &st, &ltok);
             gbl_sqlrdtimeoutms = toknum(tok, ltok);
@@ -3678,8 +3634,9 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
                 return 0;
             }
             thresh = toknum(tok, ltok);
-            analyze_set_sampling_threshold(thresh);
-           logmsg(LOGMSG_USER, "Analyze sampling threshold set to %d\n", thresh);
+            analyze_set_sampling_threshold(NULL, &thresh);
+            logmsg(LOGMSG_USER, "Analyze sampling threshold set to %d\n",
+                   thresh);
         } else if (tokcmp(tok, ltok, "tblthd") == 0) {
             int maxtd = 0;
             tok = segtok(line, lline, &st, &ltok);
@@ -3688,7 +3645,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
                 return 0;
             }
             maxtd = toknum(tok, ltok);
-            analyze_set_max_table_threads(maxtd);
+            analyze_set_max_table_threads(NULL, &maxtd);
         } else if (tokcmp(tok, ltok, "compthd") == 0) {
             int maxtd = 0;
             tok = segtok(line, lline, &st, &ltok);
@@ -3697,7 +3654,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
                 return 0;
             }
             maxtd = toknum(tok, ltok);
-            analyze_set_max_sampling_threads(maxtd);
+            analyze_set_max_sampling_threads(NULL, &maxtd);
         } else if (tokcmp(tok, ltok, "headroom") == 0) {
             uint64_t headroom = 0;
             tok = segtok(line, lline, &st, &ltok);
@@ -4965,7 +4922,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
             return 0;
         }
         n = toknum(tok, ltok);
-        ctrace_set_rollat(n);
+        ctrace_set_rollat(NULL, &n);
     } else if (tokcmp(tok, ltok, "ctrace_nlogs") == 0) {
         int n;
         tok = segtok(line, lline, &st, &ltok);
@@ -5042,7 +4999,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
                    "Default 300,000\n");
         }
 
-       logmsg(LOGMSG_USER, "Current tunables:\nCompress %d%% of the records",
+        logmsg(LOGMSG_USER, "Current tunables:\nCompress %d%% of the records",
                gbl_testcompr_percent);
         if (gbl_testcompr_max) {
            logmsg(LOGMSG_USER, ", upto a max of %d", gbl_testcompr_max);
@@ -5271,6 +5228,7 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
         tok = segtok(line, lline, &st, &ltok);
         if (ltok > 0) {
             gbl_deadlock_policy_override = toknum(tok, ltok);
+            const char *deadlock_policy_str(int policy);
             logmsg(LOGMSG_USER, "Set deadlock policy to %s\n",
                    deadlock_policy_str(gbl_deadlock_policy_override));
         } else {

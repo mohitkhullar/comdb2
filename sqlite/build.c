@@ -164,11 +164,14 @@ void sqlite3FinishCoding(Parse *pParse){
     ** on each used database.
     */
     if( db->mallocFailed==0 
-     && (DbMaskNonZero(pParse->cookieMask, 0) || pParse->pConstExpr)
+     && (DbMaskNonZero(pParse->cookieMask, 0) || pParse->pConstExpr
+         || pParse->write) /* COMDB2 MODIFICATION */
     ){
       int iDb, i;
       assert( sqlite3VdbeGetOp(v, 0)->opcode==OP_Init );
       sqlite3VdbeJumpHere(v, 0);
+      /* COMDB2 MODIFICATION DDL/PUT wants a write transaction */
+      if( pParse->write ) sqlite3VdbeAddOp2(v, OP_Transaction, 0, 1); else
       for(iDb=0; iDb<db->nDb; iDb++){
         Schema *pSchema;
         if( DbMaskTest(pParse->cookieMask, iDb)==0 ) continue;
@@ -4160,6 +4163,8 @@ void sqlite3SrcListAssignCursors(Parse *pParse, SrcList *pList, int is_recording
       if (pItem->iCursor < (MAX_CURSOR_IDS/sizeof(int))) {
         /* COMDB2 MODIFICATION */
         if( is_recording ){
+          Vdbe *v = sqlite3GetVdbe(pParse);
+          comdb2SetRecording(v);
           SET_CURSOR_RECORDING(pParse, pItem->iCursor);
         }else{
           CLR_CURSOR_RECORDING(pParse, pItem->iCursor);

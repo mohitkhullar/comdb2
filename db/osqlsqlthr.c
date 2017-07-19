@@ -131,8 +131,6 @@ int osql_delidx(struct BtCursor *pCur, struct sql_thread *thd, int is_update)
     if (!gbl_expressions_indexes || !pCur->db->ix_expr)
         return SQLITE_OK;
 
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_delidx_logic(pCur, thd, NET_OSQL_BLOCK_RPL);
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
         rc = osql_save_index(pCur, thd, is_update, 1);
         if (rc) {
@@ -162,9 +160,7 @@ int osql_delrec(struct BtCursor *pCur, struct sql_thread *thd)
     if (rc != SQLITE_OK)
         return rc;
 
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_delrec_logic(pCur, thd, NET_OSQL_BLOCK_RPL);
-    else if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
+    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
         rc = osql_save_delrec(pCur, thd);
         if (rc) {
             logmsg(LOGMSG_ERROR, 
@@ -204,8 +200,6 @@ int osql_insidx(struct BtCursor *pCur, struct sql_thread *thd, int is_update)
     if (!gbl_expressions_indexes || !pCur->db->ix_expr)
         return SQLITE_OK;
 
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_insidx_logic(pCur, thd, NET_OSQL_BLOCK_RPL);
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
         rc = osql_save_index(pCur, thd, is_update, 0);
         if (rc) {
@@ -240,9 +234,6 @@ int osql_insrec(struct BtCursor *pCur, struct sql_thread *thd, char *pData,
     if (rc != SQLITE_OK)
         return rc;
 
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_insrec_logic(pCur, thd, pData, nData,
-                                      NET_OSQL_BLOCK_RPL);
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
         rc = osql_save_insrec(pCur, thd, pData, nData);
         if (rc) {
@@ -290,9 +281,6 @@ int osql_updrec(struct BtCursor *pCur, struct sql_thread *thd, char *pData,
             return rc;
     }
 
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_updrec_logic(pCur, thd, pData, nData,
-                                      NET_OSQL_BLOCK_RPL);
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
         rc = osql_save_updrec(pCur, thd, pData, nData);
         if (rc) {
@@ -452,8 +440,6 @@ retry:
     }
 
     /* register the session */
-    osql->host = bdb_whoismaster(thedb->bdb_env);
-
     osql->host = thedb->master;
 
     /* protect against no master */
@@ -485,18 +471,15 @@ retry:
     }
 
     /* retrying a transaction, don't skip on blkseq */
-    if (keep_rqid) {
-        flags = OSQL_FLAGS_USE_BLKSEQ;
-    } else {
-        flags = 0;
-    }
+    flags = 0;
+    if (keep_rqid) bset(&flags, OSQL_FLAGS_USE_BLKSEQ);
 
     /* socksql: check if this is a verify retry, and if we got enough of those
        to trigger a self-deadlock check on the master */
 
     if ((type == OSQL_SOCK_REQ || type == OSQL_SOCK_REQ_COST) &&
         clnt->verify_retries > gbl_osql_verify_ext_chk)
-        flags = OSQL_FLAGS_CHECK_SELFLOCK;
+        bset(&flags, OSQL_FLAGS_CHECK_SELFLOCK);
     else
         flags = 0;
 
@@ -737,19 +720,20 @@ retry:
                 if (osql->xerr.errval == ERR_NOMASTER ||
                     osql->xerr.errval == 999) {
                     if (retries++ < gbl_survive_n_master_swings) {
-                        if (gbl_master_swing_osql_verbose)
-                            logmsg(LOGMSG_ERROR, "%s:%d lost connection to master, "
-                                            "retrying %d in %d msec\n",
-                                    __FILE__, __LINE__, retries,
-                                    gbl_master_retry_poll_ms);
+                        if (gbl_master_swing_osql_verbose ||
+                            gbl_extended_sql_debug_trace)
+                            logmsg(LOGMSG_ERROR,
+                                   "%s:%d lost connection to master, "
+                                   "retrying %d in %d msec\n",
+                                   __FILE__, __LINE__, retries,
+                                   gbl_master_retry_poll_ms);
 
                         poll(NULL, 0, gbl_master_retry_poll_ms);
 
                         rc = osql_sock_restart(
                             clnt, 1,
                             1 /*no new rqid*/); /* retry at higher level */
-                        if (rc != SQLITE_TOOBIG)
-                            goto retry;
+                        if (rc != SQLITE_TOOBIG) goto retry;
                     }
                 }
                 /* transaction failed on the master,
@@ -764,8 +748,18 @@ retry:
                         }
 
                         rcout = -109;
-                    }
-                    else {
+                    } else if (osql->xerr.errval == ERR_NOT_DURABLE) {
+                        /* Ask the client to change nodes */
+                        if (gbl_extended_sql_debug_trace) {
+                            logmsg(
+                                LOGMSG_USER,
+                                "td=%u %s line %d got %d and setting rcout to "
+                                "SQLITE_CLIENT_CHANGENODE,  errval is %d\n",
+                                pthread_self(), __func__, __LINE__, rc,
+                                osql->xerr.errval);
+                        }
+                        rcout = SQLITE_CLIENT_CHANGENODE;
+                    } else {
                         if (gbl_extended_sql_debug_trace) {
                             logmsg(LOGMSG_USER, "td=%u %s line %d got %d and setting rcout to SQLITE_ABORT, " 
                                     " errval is %d\n", pthread_self(), __func__, __LINE__, rc, 
@@ -775,9 +769,22 @@ retry:
                         // which is translated to 4 'null key constraint'.
                         rcout = SQLITE_ABORT;
                     }
-                }
-                else
+                } else {
+                    if (gbl_extended_sql_debug_trace) {
+                        logmsg(LOGMSG_USER,
+                               "td=%u %s line %d got %d and setting "
+                               "rcout to SQLITE_TOOBIG, "
+                               " errval is %d\n",
+                               pthread_self(), __func__, __LINE__, rc,
+                               osql->xerr.errval);
+                    }
                     rcout = SQLITE_TOOBIG;
+                }
+            } else {
+                if (gbl_extended_sql_debug_trace) {
+                    logmsg(LOGMSG_USER, "td=%u %s line %d got %d from %s\n",
+                           pthread_self(), __func__, __LINE__, rc, osql->host);
+                }
             }
         }
         if (clnt->client_understands_query_stats && clnt->dbglog)
@@ -847,6 +854,15 @@ err:
                    __FILE__, __LINE__, rc);
    }
 
+   if (clnt->ddl_tables) {
+       hash_free(clnt->ddl_tables);
+   }
+   if (clnt->dml_tables) {
+       hash_free(clnt->dml_tables);
+   }
+   clnt->ddl_tables = NULL;
+   clnt->dml_tables = NULL;
+
    return rcout;
 }
 
@@ -903,6 +919,15 @@ int osql_sock_abort(struct sqlclntstate *clnt, int type)
         clnt->osql.tablenamelen = 0;
     }
 
+    if (clnt->ddl_tables) {
+        hash_free(clnt->ddl_tables);
+    }
+    if (clnt->dml_tables) {
+        hash_free(clnt->dml_tables);
+    }
+    clnt->ddl_tables = NULL;
+    clnt->dml_tables = NULL;
+
     return rcout;
 }
 
@@ -944,6 +969,18 @@ static int osql_send_usedb_logic_int(char *tablename, struct sqlclntstate *clnt,
     osqlstate_t *osql = &clnt->osql;
     int tablenamelen = strlen(tablename) + 1; /*including trailing 0*/
     int rc = 0;
+
+    char *tblname = strdup(tablename);
+    void strupper(char *c);
+    strupper(tblname);
+    if (clnt->ddl_tables && hash_find_readonly(clnt->ddl_tables, tblname)) {
+        free(tblname);
+        return SQLITE_DDL_MISUSE;
+    }
+    if (clnt->dml_tables && !hash_find_readonly(clnt->dml_tables, tblname))
+        hash_add(clnt->dml_tables, tblname);
+    else
+        free(tblname);
 
     if (osql->tablename) {
         if (osql->tablenamelen == (strlen(tablename) + 1) &&
@@ -1127,11 +1164,12 @@ static int osql_send_qblobs_logic(struct BtCursor *pCur, struct sql_thread *thd,
     int i;
     int idx;
     int ncols;
+    int actualblobs;
 
     /* override maxblobs to the max # blobs we'll actually need to send */
-    maxblobs = pCur->db->schema->numblobs;
+    actualblobs = pCur->db->schema->numblobs;
 
-    for (i = 0; i < maxblobs; i++) {
+    for (i = 0; i < actualblobs; i++) {
 
         if (blobs[i].exists) {
 
@@ -1175,8 +1213,6 @@ static int osql_updcols(struct BtCursor *pCur, struct sql_thread *thd,
 {
     int rc = 0;
 
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_updcols_logic(pCur, thd, updCols, NET_OSQL_BLOCK_RPL);
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
         rc = osql_save_updcols(pCur, thd, updCols);
         if (rc) {
@@ -1194,13 +1230,8 @@ static int osql_qblobs(struct BtCursor *pCur, struct sql_thread *thd,
                        int *updCols, blob_buffer_t *blobs, int maxblobs,
                        int is_update)
 {
-    int rc = 0;
-
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return osql_send_qblobs_logic(pCur, thd, updCols, blobs, maxblobs,
-                                      NET_OSQL_BLOCK_RPL);
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
-        rc = osql_save_qblobs(pCur, thd, blobs, maxblobs, is_update);
+        int rc = osql_save_qblobs(pCur, thd, blobs, maxblobs, is_update);
         if (rc) {
             logmsg(LOGMSG_ERROR, 
                     "%s:%d %s - failed to cache socksql row rc=%d\n",
@@ -1429,20 +1460,13 @@ int osql_cleartable(struct sql_thread *thd, char *dbname) {
 int osql_record_genid(struct BtCursor *pCur, struct sql_thread *thd,
                       unsigned long long genid)
 {
-    int rc = 0;
-
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL) {
-        logmsg(LOGMSG_ERROR, "SELECTV is not supported for BLOCKSQL\n");
-        return -1;
-    }
-
     /* skip synthetic genids */
     if (is_genid_synthetic(genid)) {
         return 0;
     }
 
     if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
-        rc = osql_save_recordgenid(pCur, thd, genid);
+        int rc = osql_save_recordgenid(pCur, thd, genid);
         if (rc) {
             logmsg(LOGMSG_ERROR, 
                     "%s:%d %s - failed to cache socksql row rc=%d\n",
@@ -1506,10 +1530,6 @@ static int access_control_check_sql_write(struct BtCursor *pCur,
     int rc = 0;
     int bdberr = 0;
 
-    /* blocksql mode is tested on the master */
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return 0;
-
     if (gbl_uses_accesscontrol_tableXnode) {
         rc = bdb_access_tbl_write_by_mach_get(
             pCur->db->dbenv->bdb_env, NULL, pCur->db->dbname,
@@ -1555,10 +1575,6 @@ int access_control_check_sql_read(struct BtCursor *pCur, struct sql_thread *thd)
 {
     int rc = 0;
     int bdberr = 0;
-
-    /* blocksql mode is tested on the master */
-    if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL)
-        return 0;
 
     if (gbl_uses_accesscontrol_tableXnode) {
         rc = bdb_access_tbl_read_by_mach_get(
@@ -1614,16 +1630,28 @@ int osql_schemachange_logic(struct schema_change_type *sc,
     osqlstate_t *osql = &clnt->osql;
     char *host = thd->sqlclntstate->osql.host;
     unsigned long long rqid = thd->sqlclntstate->osql.rqid;
-    int rc = 0;
-
-    // At this moment I have no idea of what to do at any other transaction
-    // level
-
-    if (1 /*thd->sqlclntstate->dbtran.mode == TRANLEVEL_OSQL*/)
-        return osql_send_schemachange(host, rqid, thd->sqlclntstate->osql.uuid,
-                                      sc, NET_OSQL_BLOCK_RPL_UUID, osql->logsb);
-    else if (thd->sqlclntstate->dbtran.mode == TRANLEVEL_SOSQL) {
-        return -1;
-    } else
-        return -1;
+    char *tblname = strdup(sc->table);
+    void strupper(char *c);
+    strupper(tblname);
+    if (clnt->dml_tables && hash_find_readonly(clnt->dml_tables, tblname)) {
+        free(tblname);
+        return SQLITE_DDL_MISUSE;
+    }
+    if (clnt->ddl_tables) {
+        if (hash_find_readonly(clnt->ddl_tables, tblname)) {
+            free(tblname);
+            return SQLITE_DDL_MISUSE;
+        } else
+            hash_add(clnt->ddl_tables, tblname);
+    } else {
+        free(tblname);
+    }
+    int rc = osql_save_schemachange(thd, sc);
+    if (rc) {
+        logmsg(LOGMSG_ERROR,
+               "%s:%d %s - failed to cache socksql schemachange rc=%d\n",
+               __FILE__, __LINE__, __func__, rc);
+    }
+    return osql_send_schemachange(host, rqid, thd->sqlclntstate->osql.uuid, sc,
+                                  NET_OSQL_BLOCK_RPL_UUID, osql->logsb);
 }

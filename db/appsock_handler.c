@@ -205,7 +205,6 @@ void appsock_stat(void)
     appsock_quick_stat();
     logmsg(LOGMSG_USER, "bad appsock commands    %llu\n", num_bad_toks);
     logmsg(LOGMSG_USER, "rejected appsock conns  %llu\n", total_appsock_rejections);
-    logmsg(LOGMSG_USER, "fastdump timeout ms     %d\n", gbl_fastdump_timeoutms);
     for (ii = 0; ii < num_commands; ii++) {
         if (commands[ii].num_uses) {
             logmsg(LOGMSG_USER, "  num %-16s  %llu\n", commands[ii].cmd,
@@ -746,48 +745,6 @@ static void *thd_appsock_int(SBUF2 *sb, int *keepsocket,
             sbuf2printf(sb, "?Invalid genid48 command.\nFAILED\n");
             sbuf2flush(sb);
             continue;
-        } else if (cmd == cmd_disableskipscan) {
-            tok = segtok(line, rc, &st, &ltok);
-            if (ltok <= 0) {
-                sbuf2printf(sb, "?No tablename specified.\nFAILED\n");
-                sbuf2flush(sb);
-                continue;
-            }
-
-            char table[80] = {0};
-            /* grab the table */
-            tokcpy0(tok, ltok, table, sizeof(table));
-
-#ifdef DEBUG
-            printf("cmd_disableskipscan table '%s'\n", table);
-#endif
-
-            struct db *tbl = getdbbyname(table);
-            if (!tbl) {
-                sbuf2printf(sb, ">Cannot find table '%s'\nFAILED\n", table);
-                sbuf2flush(sb);
-                continue;
-            }
-            tok = segtok(line, rc, &st, &ltok);
-            if (ltok && strncmp(tok, "clear", 5) == 0) {
-                bdb_clear_table_parameter(NULL, table, "disableskipscan");
-                set_skipscan_for_table_indices(tbl, 0);
-            } else {
-                const char *value = "true";
-                bdb_set_table_parameter(NULL, table, "disableskipscan", value);
-                set_skipscan_for_table_indices(tbl, 1);
-            }
-
-            char *setval = NULL;
-            bdb_get_table_parameter(table, "disableskipscan", &setval);
-
-            if (setval) {
-                sbuf2printf(sb, ">disableskipscan set %s\n", setval);
-                free(setval);
-            } else
-                sbuf2printf(sb, ">disableskipscan cleared\n");
-            sbuf2printf(sb, "SUCCESS\n");
-            sbuf2flush(sb);
         } else if (cmd == cmd_testcompr) {
             char table[128];
             tok = segtok(line, rc, &st, &ltok);

@@ -301,17 +301,18 @@ static void thd_coalesce_check_ll(void)
 static void thd_dump_nolock(void)
 {
     struct thd *thd;
-    int nowms, opc, cnt = 0;
-    nowms = time_epochms();
+    uint64_t nowus;
+    int opc, cnt = 0;
+    nowus = time_epochus();
 
     {
         for (thd = busy.top; thd; thd = thd->lnk.next) {
             cnt++;
             opc = thd->iq->opcode;
-            logmsg(LOGMSG_USER, 
-                "busy  tid %-5d  time %5d ms  %-6s (%-3d) %-20s where %s %s\n",
-                thd->tid, nowms - thd->iq->nowms, req2a(opc), opc,
-                getorigin(thd->iq), thd->iq->where, thd->iq->gluewhere);
+            logmsg(LOGMSG_USER, "busy  tid %-5d  time %5d ms  %-6s (%-3d) "
+                                "%-20s where %s %s\n",
+                   thd->tid, U2M(nowus - thd->iq->nowus), req2a(opc), opc,
+                   getorigin(thd->iq), thd->iq->where, thd->iq->gluewhere);
         }
 
         for (thd = idle.top; thd; thd = thd->lnk.next) {
@@ -369,17 +370,19 @@ void thd_coalesce(struct dbenv *dbenv)
 void thd_dump(void)
 {
     struct thd *thd;
-    int nowms, cnt = 0;
-    nowms = time_epochms();
+    uint64_t nowus;
+    int cnt = 0;
+    nowus = time_epochus();
     LOCK(&lock)
     {
         for (thd = busy.top; thd; thd = thd->lnk.next) {
             cnt++;
-            logmsg(LOGMSG_USER, "busy  tid %-5d  time %5d ms  %-6s (%-3d) %-20s where %s "
+            logmsg(LOGMSG_USER,
+                   "busy  tid %-5d  time %5d ms  %-6s (%-3d) %-20s where %s "
                    "%s\n",
-                   thd->tid, nowms - thd->iq->nowms, req2a(thd->iq->opcode),
-                   thd->iq->opcode, getorigin(thd->iq), thd->iq->where,
-                   thd->iq->gluewhere);
+                   thd->tid, U2M(nowus - thd->iq->nowus),
+                   req2a(thd->iq->opcode), thd->iq->opcode, getorigin(thd->iq),
+                   thd->iq->where, thd->iq->gluewhere);
         }
 
         for (thd = idle.top; thd; thd = thd->lnk.next) {
@@ -501,7 +504,7 @@ static void *thd_req(void *vthd)
                     thd->tid, pthread_self());
             abort();
         }
-        thd->iq->startms = time_epochms();
+        thd->iq->startus = time_epochus();
         thd->iq->where = "executing";
         /*PROCESS REQUEST*/
         thd->iq->reqlogger = logger;
@@ -736,18 +739,6 @@ static int reterr_withfree(struct ireq *iq, int do_inline, int rc)
         } else {
             /* we don't do this anymore for sorese requests */
             abort();
-            iq->errstat.errval = iq->sorese.rcout = rc;
-            if (iq->sorese.rqid == 0)
-                abort();
-            strncpy(iq->errstat.errstr, "master queue full",
-                    sizeof(iq->errstat.errstr));
-
-            /* NOTE: lower in this function we free iq, and we had to remove
-               bplog and its
-               sessions;  reader_thread trying to save in bplog should be aware
-               session is
-               not around anymore */
-            osql_bplog_clearonerror(iq, rc);
         }
         if (iq->p_buf_out_start) {
             free(iq->p_buf_out_start);
@@ -1103,11 +1094,12 @@ int init_ireq(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb, uint8_t *p_buf,
               int luxref, unsigned long long rqid)
 {
     struct req_hdr hdr;
-    int rc, nowms, num, ndispatch, iamwriter = 0;
+    uint64_t nowus;
+    int rc, num, ndispatch, iamwriter = 0;
     struct thd *thd;
     int numwriterthreads;
 
-    nowms = time_epochms();
+    nowus = time_epochus();
 
     if (iq == 0) {
         if (!do_inline)
@@ -1130,7 +1122,7 @@ int init_ireq(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb, uint8_t *p_buf,
     iq->frompid = frompid;
     iq->gluewhere = "-";
     iq->debug = debug_this_request(gbl_debug_until) || (debug && gbl_debug);
-    iq->debug_now = iq->nowms = nowms;
+    iq->debug_now = iq->nowus = nowus;
     iq->dbenv = dbenv;
     iq->rqid = rqid;
 
@@ -1177,7 +1169,6 @@ int init_ireq(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb, uint8_t *p_buf,
     iq->__limits.tablescans_warn = gbl_querylimits_tablescans_warn;
     iq->__limits.temptables_warn = gbl_querylimits_temptables_warn;
 
-    iq->readcost = 0;
     iq->cost = 0;
     iq->sorese.osqllog = NULL;
     iq->luxref = luxref;
@@ -1302,7 +1293,6 @@ static int handle_buf_main(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb,
         if (newent == NULL) {
             errUNLOCK(&lock);
             logmsg(LOGMSG_ERROR, "handle_buf:failed to alloc new queue entry, rc %d\n", rc);
-            iq->failed_to_dispatch = 1;
             return reterr(/*thd*/ 0, iq, do_inline, ERR_REJECTED);
         }
         newent->obj = (void *)iq;
@@ -1384,7 +1374,6 @@ static int handle_buf_main(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb,
                     errUNLOCK(&lock);
                     logmsg(LOGMSG_ERROR, "handle_buf:failed calloc thread:%s\n",
                             strerror(errno));
-                    iq->failed_to_dispatch = 1;
                     return reterr(/*thd*/ 0, iq, do_inline, ERR_INTERNAL);
                 }
                 /*add holder for this one being born...*/
@@ -1400,7 +1389,6 @@ static int handle_buf_main(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb,
                 if (rc != 0) {
                     errUNLOCK(&lock);
                     perror_errnum("handle_buf:failed pthread_cond_init", rc);
-                    iq->failed_to_dispatch = 1;
                     return reterr(thd, iq, do_inline, ERR_INTERNAL);
                 }
                 nthdcreates++;
@@ -1427,7 +1415,6 @@ static int handle_buf_main(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb,
                                 __func__);
                         exit(1);
                     }
-                    iq->failed_to_dispatch = 1;
                     return reterr(thd, iq, do_inline, ERR_INTERNAL);
                 }
                 /* added thread to thread pool.*/
@@ -1453,7 +1440,6 @@ static int handle_buf_main(struct dbenv *dbenv, struct ireq *iq, SBUF2 *sb,
             nextrq = (struct dbq_entry_t *)listc_rbl(&q_reqs);
             if (nextrq && nextrq == newent) {
                 iq = nextrq->obj;
-                iq->failed_to_dispatch = 1;
                 iamwriter = is_req_write(iq->opcode) ? 1 : 0;
                 if (!iamwriter) {
                     (void)listc_rfl(&rq_reqs, nextrq);

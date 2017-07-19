@@ -5,6 +5,8 @@ set -x
 
 debug=0
 
+[[ $COMDB2_UNITTEST == 1 ]] && exit 0
+
 while [[ $# -gt 0 && $1 = -* ]]; do
     [[ $1 = '-debug' ]] && debug=1
     shift
@@ -199,8 +201,16 @@ $comdb2task --create --lrl $DBDIR/${DBNAME}.lrl --pidfile ${TMPDIR}/$DBNAME.pid 
 rc=$?
 rm -f ${DBNAME}.trap
 if [[ $rc -ne 0 ]]; then
+    echo "Error rc=$rc while initializing DB, see $TESTDIR/logs/${DBNAME}.init "
     exit 1
 fi
+
+# test largecsc2 throws error about col width, can't enable this by default
+#if grep "ERROR" $TESTDIR/logs/${DBNAME}.init ; then
+#    echo "Error while initializing DB, see $TESTDIR/logs/${DBNAME}.init "
+#    exit 1
+#fi
+
 
 # start it
 cd $DBDIR >/dev/null
@@ -267,6 +277,12 @@ else
             sleep 2
             out=$(cdb2sql ${CDB2_OPTIONS} --tabs --host $node $DBNAME 'select 1' 2>&1)
         done
+        out=$(cdb2sql ${CDB2_OPTIONS} --tabs --host $node $DBNAME 'comdb2_host()' 2>&1)
+        if [ $out != $node ] ; then
+            echo "comdb2_host() '$out' != expected '$node'"
+            sleep 1
+            exit 1
+        fi
     done
     for node in $CLUSTER; do
         cdb2sql ${CDB2_OPTIONS} -tabs $DBNAME --host $node 'exec procedure sys.cmd.send("udp stat all")'

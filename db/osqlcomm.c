@@ -718,8 +718,7 @@ static uint8_t *osqlcomm_schemachange_type_get(struct schema_change_type *sc,
     uint8_t *tmp_buf =
         buf_get_schemachange(sc, (void *)p_buf, (void *)p_buf_end);
 
-    if (sc->table_len == -1 || sc->fname_len == -1 || sc->aname_len == -1 ||
-        sc->newcsc2_len < 0)
+    if (sc->table_len == -1 || sc->fname_len == -1 || sc->aname_len == -1)
         return NULL;
 
     return tmp_buf;
@@ -6032,7 +6031,7 @@ static int net_osql_rpl_tail(void *hndl, void *uptr, char *fromhost,
                 "%s: master running out of memory! unable to alloc %d bytes\n",
                 __func__, dtalen + tailen);
         abort();
-        rc = NET_SEND_FAIL_MALLOC_FAIL;
+        /*rc = NET_SEND_FAIL_MALLOC_FAIL;*/
     } else {
 
         memmove(dup, dtap, dtalen);
@@ -6361,19 +6360,18 @@ int osql_process_packet(struct ireq *iq, unsigned long long rqid, uuid_t uuid,
         /* just in case */
         free_blob_buffers(blobs, MAXBLOBS);
 
-        if (iq->sc != NULL) {
-            if (strcmp(
-                    ((struct schema_change_type *)iq->sc)->original_master_node,
-                    gbl_mynode)) // TODO: Fix the type of the pointer once there
-                                 // is an accessor method
-                return -1; // Can't commit without resuming locally, also change
-                           // return code
-            rc = finalize_schema_change(iq->sc);
-
-            iq->sc = NULL;
-
-            if (rc != SC_OK)
+        iq->sc = iq->sc_pending;
+        while (iq->sc != NULL) {
+            void *ptran = bdb_get_physical_tran(trans);
+            if (strcmp(iq->sc->original_master_node, gbl_mynode) != 0) {
+                return -1;
+            }
+            if (iq->sc->db) iq->usedb = iq->sc->db;
+            rc = finalize_schema_change(iq, ptran);
+            if (rc != SC_OK) {
                 return rc; // Change to failed schema change error;
+            }
+            iq->sc = iq->sc->sc_next;
         }
 
         // TODO Notify all bpfunc of success
@@ -6529,7 +6527,7 @@ int osql_process_packet(struct ireq *iq, unsigned long long rqid, uuid_t uuid,
          * but since we changed the way we backup stats (used to be in llmeta)
          * this opcode is only used to reload stats now
          */
-        iq->osql_flags |= OSQL_FLAGS_ANALYZE;
+        bset(&iq->osql_flags, OSQL_FLAGS_ANALYZE);
     } break;
     case OSQL_INSREC:
     case OSQL_INSERT: {
@@ -7026,31 +7024,35 @@ int osql_process_packet(struct ireq *iq, unsigned long long rqid, uuid_t uuid,
     case OSQL_SCHEMACHANGE: {
         uint8_t *p_buf = (uint8_t *)msg + sizeof(osql_uuid_rpl_t);
         uint8_t *p_buf_end = p_buf + msglen;
-        if (iq->sc != NULL) {
-            return -1; // Only one schemachange at the time; // this should also
-                       // backout previous one
-        } else {
-            struct schema_change_type *sc = new_schemachange_type();
-            p_buf = osqlcomm_schemachange_type_get(sc, p_buf, p_buf_end);
+        struct schema_change_type *sc = new_schemachange_type();
+        p_buf = osqlcomm_schemachange_type_get(sc, p_buf, p_buf_end);
 
-            if (p_buf == NULL)
-                return -1;
+        if (p_buf == NULL) return -1;
 
-            sc->nothrevent = 1;
-            sc->finalize = 0;
-            if (sc->original_master_node[0] != 0 &&
-                strcmp(sc->original_master_node, gbl_mynode))
-                sc->resume = 1;
+        sc->nothrevent = 1;
+        sc->finalize = 0;
+        if (sc->original_master_node[0] != 0 &&
+            strcmp(sc->original_master_node, gbl_mynode))
+            sc->resume = 1;
 
-            rc = start_schema_change(NULL, sc, iq);
-
-            if (rc == SC_COMMIT_PENDING)
-                iq->sc = sc;
-            else
-                iq->sc = NULL;
-
-            return rc == SC_COMMIT_PENDING || !rc ? 0 : ERR_SC;
+        void *ptran = bdb_get_physical_tran(trans);
+        bdb_ltran_get_schema_lock(trans);
+        iq->sc = sc;
+        if (sc->db == NULL) {
+            sc->db = getdbbyname(sc->table);
         }
+        sc->tran = ptran;
+        if (sc->db) iq->usedb = sc->db;
+        rc = start_schema_change_tran(iq, ptran);
+        if (rc != SC_COMMIT_PENDING) {
+            iq->sc = NULL;
+        } else {
+            iq->sc->sc_next = iq->sc_pending;
+            iq->sc_pending = iq->sc;
+            bset(&iq->osql_flags, OSQL_FLAGS_SCDONE);
+        }
+
+        return rc == SC_COMMIT_PENDING || !rc ? 0 : ERR_SC;
     } break;
     case OSQL_BPFUNC: {
         uint8_t *p_buf_end = (uint8_t *)msg + sizeof(osql_bpfunc_t) + msglen;
@@ -7231,12 +7233,12 @@ static int sorese_rcvreq(char *fromhost, void *dtap, int dtalen, int type,
     /* for socksql, is this a retry that need to be checked for self-deadlock?
      */
     if ((type == OSQL_SOCK_REQ || type == OSQL_SOCK_REQ_COST) &&
-        (req.flags & OSQL_FLAGS_CHECK_SELFLOCK)) {
+        (btst(&req.flags, OSQL_FLAGS_CHECK_SELFLOCK))) {
         /* just make sure we are above the threshold */
         iq->sorese.verify_retries += gbl_osql_verify_ext_chk;
     }
 
-    if ((req.flags & OSQL_FLAGS_USE_BLKSEQ)) {
+    if (btst(&req.flags, OSQL_FLAGS_USE_BLKSEQ)) {
         iq->sorese.use_blkseq = 1;
     } else {
         iq->sorese.use_blkseq = 0;
@@ -8449,34 +8451,32 @@ static void osqlpfault_do_work(struct thdpool *pool, void *work, void *thddata)
         unsigned long long genid = 0;
         unsigned char *fnddta = malloc(32768 * sizeof(unsigned char));
 
+        if (fnddta == NULL) {
+            logmsg(LOGMSG_FATAL, "osqlpfault_do_work: malloc %u failed\n",
+                   od_len);
+            exit(1);
+        }
         iq.usedb = req->db;
 
         od_len_int = getdatsize(iq.usedb);
         if (od_len_int <= 0) {
-            if (fnddta)
-                free(fnddta);
+            free(fnddta);
             break;
         }
         od_len = (size_t)od_len_int;
 
         step += 1;
         if (step <= gbl_osqlpf_step[req->i].step) {
-            if (fnddta)
-                free(fnddta);
+            free(fnddta);
             break;
         }
 
-        if (fnddta == NULL) {
-            logmsg(LOGMSG_FATAL, "osqlpfault_do_work: malloc %u failed\n", od_len);
-            exit(1);
-        }
 
         rc = ix_find_by_rrn_and_genid_prefault(&iq, 2, req->genid, fnddta,
                                                &fndlen, od_len);
 
         if ((is_bad_rc(rc)) || (od_len != fndlen)) {
-            if (fnddta)
-                free(fnddta);
+            free(fnddta);
             break;
         }
 
@@ -8506,8 +8506,7 @@ static void osqlpfault_do_work(struct thdpool *pool, void *work, void *thddata)
                                          req->rqid, req->seq);
         }
 
-        if (fnddta)
-            free(fnddta);
+        free(fnddta);
 
         /* enqueue faults for new keys */
         for (ixnum = 0; ixnum < iq.usedb->nix; ixnum++) {
@@ -8993,15 +8992,14 @@ static void uprec_sender_array_init(void)
 
 int offload_comm_send_upgrade_records(struct db *db, unsigned long long genid)
 {
-    int rc = 0, stripe, idx, nhosts;
+    int rc = 0, stripe, idx;
     struct errstat xerr;
 
     if (genid == 0)
         return EINVAL;
 
     /* if i am master of a cluster, return. */
-    nhosts = net_count_nodes(osql_get_netinfo());
-    if (nhosts > 1 && thedb->master == gbl_mynode)
+    if (thedb->master == gbl_mynode && net_count_nodes(osql_get_netinfo()) > 1)
         return 0;
 
     (void)pthread_once(&uprec_sender_array_once, uprec_sender_array_init);
