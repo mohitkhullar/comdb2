@@ -1406,6 +1406,7 @@ static int copy_records(struct convert_record_data *data)
         // rewrite the record if not ondisk version
         p_buf_data = (uint8_t *)data->dta_buf;
         p_buf_data_end = p_buf_data + data->from->lrl;
+#if 0
         rc = add_record(
             &data->iq, data->trans, p_tagname_buf, p_tagname_buf_end,
             p_buf_data, p_buf_data_end, NULL, data->wrblb, MAXBLOBS,
@@ -1414,6 +1415,7 @@ static int copy_records(struct convert_record_data *data)
             BLOCK2_ADDKL, /* opcode */
             0,            /* blkpos */
             addflags);
+#endif
     }
 
     // handle rc
