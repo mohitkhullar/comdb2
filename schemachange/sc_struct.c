@@ -83,6 +83,11 @@ void free_schema_change_type(struct schema_change_type *s)
             s->newcsc2 = NULL;
         }
 
+        if (s->filename) {
+            free(s->filename);
+            s->filename = NULL;
+        }
+
         free_dests(s);
         pthread_mutex_destroy(&s->mtx);
 

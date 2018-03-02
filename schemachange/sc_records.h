@@ -65,6 +65,9 @@ int convert_all_records(struct dbtable *from, struct dbtable *to,
 int upgrade_all_records(struct dbtable *db, unsigned long long *sc_genids,
                         struct schema_change_type *s);
 
+int copy_all_records(struct dbtable *db, unsigned long long *sc_genids,
+                        struct schema_change_type *s);
+
 void *convert_records_thd(struct convert_record_data *data);
 
 void convert_record_data_cleanup(struct convert_record_data *data);

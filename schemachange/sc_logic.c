@@ -496,6 +496,8 @@ int do_schema_change_tran(sc_arg_t *arg)
                     rename_table);
     else if (s->fulluprecs || s->partialuprecs)
         rc = do_upgrade_table(s);
+    else if (s->tablecopy)
+        rc = do_copy_table(s);
     else if (s->type == DBTYPE_TAGGED_TABLE)
         rc = do_ddl(do_alter_table, finalize_alter_table, iq, s, trans, alter);
     else if (s->type == DBTYPE_QUEUE)

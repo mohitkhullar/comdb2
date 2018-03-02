@@ -1176,6 +1176,24 @@ error_prelock:
     return xerr->errval;
 }
 
+int start_table_copy(struct dbenv *dbenv, const char *tbl,
+                        const char *filename)
+{
+    struct schema_change_type *sc =
+        calloc(1, sizeof(struct schema_change_type));
+    if (sc == NULL) return ENOMEM;
+
+    sc->live = 1;
+    sc->nothrevent = 1;
+    sc->scanmode = gbl_default_sc_scanmode;
+    sc->tablecopy = 1;
+    sc->force_rebuild = 1;
+    strncpy0(sc->table, tbl, sizeof(sc->table));
+    sc->filename = strdup(filename);
+
+    return start_schema_change(sc);
+}
+
 /* shortcut for running table upgrade in a schemachange shell */
 int start_table_upgrade(struct dbenv *dbenv, const char *tbl,
                         unsigned long long genid, int full, int partial,

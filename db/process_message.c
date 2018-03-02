@@ -3078,6 +3078,23 @@ int process_command(struct dbenv *dbenv, char *line, int lline, int st)
         tbl = tokdup(tok, ltok);
         rc = start_table_upgrade(dbenv, tbl, 0, 1, 0, 1);
         free(tbl);
+    } else if (tokcmp(tok, ltok, "copytable") == 0) {
+        char *tbl;
+        char *file;
+        tok = segtok(line, lline, &st, &ltok);
+        if (ltok == 0) {
+            logmsg(LOGMSG_ERROR, "Expected table name.\n");
+            return -1;
+        }
+        tbl = tokdup(tok, ltok);
+        tok = segtok(line, lline, &st, &ltok);
+        if (ltok == 0) {
+            logmsg(LOGMSG_ERROR, "Expected table name.\n");
+            return -1;
+        }
+        file = tokdup(tok, ltok);
+        rc = start_table_copy(dbenv, tbl, file);
+        free(tbl);
     } else if (tokcmp(tok, ltok, "enable_upgrade_ahead") == 0) {
         tok = segtok(line, sizeof(line), &st, &ltok);
         if (ltok <= 0)

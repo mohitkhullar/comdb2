@@ -1533,7 +1533,8 @@ enum convert_scan_mode {
     SCAN_DUMP = 2,
     SCAN_OLDCODE = 3,
     SCAN_PARALLEL = 4, /* creates one thread for each stripe */
-    SCAN_PAGEORDER = 5 /* 1 thread per stripe in page-order */
+    SCAN_PAGEORDER = 5, /* 1 thread per stripe in page-order */
+    SCAN_COPY = 6
 };
 
 struct dbq_cursor {

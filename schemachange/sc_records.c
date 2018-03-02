@@ -1283,6 +1283,360 @@ int convert_all_records(struct dbtable *from, struct dbtable *to,
     return outrc;
 }
 
+static int copy_records(struct convert_record_data *data)
+{
+    static const int mult = 100;
+    static int inco_delay = 0;
+
+    int rc;
+    int nretries;
+    int commitdelay;
+    int now;
+    int copy_sc_report_freq = gbl_sc_report_freq;
+    int opfailcode = 0;
+    int ixfailnum = 0;
+    int dtalen = 0;
+    int bdberr;
+    unsigned long long genid = 0;
+    int recver;
+    uint8_t *p_buf_data, *p_buf_data_end;
+    db_seqnum_type ss;
+    int fd;
+
+    // if sc has beed aborted, return
+    if (gbl_sc_abort) {
+        sc_errf(data->s, "Schema change aborted\n");
+        return -1;
+    }
+
+    if (data->trans == NULL) {
+        /* Schema-change writes are always page-lock, not rowlock */
+        rc = trans_start_sc(&data->iq, NULL, &data->trans);
+        if (rc) {
+            sc_errf(data->s, "error %d starting transaction\n", rc);
+            return -2;
+        }
+    }
+
+    // make sc transaction low priority
+    set_tran_lowpri(&data->iq, data->trans);
+
+    // set debug info
+    if (gbl_who > 0 || data->iq.debug > 0) {
+        pthread_mutex_lock(&gbl_sc_lock);
+        data->iq.debug = gbl_who;
+        if (data->iq.debug > 0) {
+            gbl_who = data->iq.debug - 1;
+            data->iq.debug = 1;
+        }
+        pthread_mutex_unlock(&gbl_sc_lock);
+    }
+
+    data->iq.timeoutms = gbl_sc_timeoutms;
+    fd = fopen(data->s->filename, "r");
+    if (fd <= 0) {
+       sc_printf(data->s, "invalid filename %s\n", data->s->filename);
+       return -1;
+    } else {
+       sc_printf(data->s, "opened file %s\n", data->s->filename);
+    }
+    
+    char *line = NULL;
+    int len,n;
+    while((len = getline(&line, &n, fd)) != -1) {
+       line[len-1] = 0;
+       sc_printf(data->s, "opened data %s Len %d\n", line, len);
+       free(line);
+       line = NULL;
+    }
+ 
+#if 0
+    // get next converted record. retry up to gbl_maxretries times
+    for (nretries = 0, rc = RC_INTERNAL_RETRY;
+         rc == RC_INTERNAL_RETRY && nretries++ != gbl_maxretries;) {
+
+        if (data->nrecs > 0 || data->sc_genids[data->stripe] == 0) {
+            rc = dtas_next(&data->iq, data->sc_genids, &genid, &data->stripe,
+                           data->scanmode == SCAN_PARALLEL, data->dta_buf,
+                           data->trans, data->from->lrl, &dtalen, &recver);
+        } else {
+            genid = data->sc_genids[data->stripe];
+            rc = ix_find_ver_by_rrn_and_genid_tran(
+                &data->iq, 2, genid, data->dta_buf, &dtalen, data->from->lrl,
+                data->trans, &recver);
+        }
+
+        switch (rc) {
+        case 0: // okay
+            break;
+
+        case 1: // finish reading all records
+            sc_printf(data->s, "finished stripe %d\n", data->stripe);
+            return 0;
+
+        case RC_INTERNAL_RETRY: // retry
+            trans_abort(&data->iq, data->trans);
+            data->trans = NULL;
+            break;
+
+        default: // fatal error
+            sc_errf(data->s, "error %d reading database records\n", rc);
+            return -2;
+        }
+    }
+
+    // exit after too many retries
+    if (rc == RC_INTERNAL_RETRY) {
+        sc_errf(data->s, "%s: *ERROR* dtas_next "
+                         "too much contention count %d genid 0x%llx\n",
+                __func__, nretries, genid);
+        return -2;
+    }
+#endif
+
+    /* Report wrongly sized records */
+    if (dtalen != data->from->lrl) {
+        sc_errf(data->s, "invalid record size for genid 0x%llx (%d bytes"
+                         " but expected %d)\n",
+                genid, dtalen, data->from->lrl);
+        return -2;
+    }
+
+    if (recver != data->to->version) {
+        // rewrite the record if not ondisk version
+        p_buf_data = (uint8_t *)data->dta_buf;
+        p_buf_data_end = p_buf_data + data->from->lrl;
+        rc = add_record(
+            &data->iq, data->trans, p_tagname_buf, p_tagname_buf_end,
+            p_buf_data, p_buf_data_end, NULL, data->wrblb, MAXBLOBS,
+            &opfailcode, &ixfailnum, &nrrn, &ngenid,
+            (gbl_partial_indexes && data->to->ix_partial) ? dirty_keys : -1ULL,
+            BLOCK2_ADDKL, /* opcode */
+            0,            /* blkpos */
+            addflags);
+    }
+
+    // handle rc
+    switch (rc) {
+    default: /* bang! */
+        sc_errf(data->s, "Error upgrading record "
+                         "rc %d opfailcode %d genid 0x%llx\n",
+                rc, opfailcode, genid);
+        return -2;
+
+    case RC_INTERNAL_RETRY: /* deadlock */
+                            /*
+                             ** if deadlk occurs, abort txn and skip this record.
+                             ** leaving a single record unconverted does little harm.
+                             ** also the record has higher chances to be updated
+                             ** by the other txns which are holding resources this txn requires.
+                             */
+        ++data->nrecskip;
+        trans_abort(&data->iq, data->trans);
+        data->trans = NULL;
+        break;
+
+    case 0: /* all good */
+        ++data->nrecs;
+        rc = trans_commit_seqnum(&data->iq, data->trans, &ss);
+        data->trans = NULL;
+
+        if (rc) {
+            sc_errf(data->s, "%s: trans_commit failed with "
+                             "rcode %d",
+                    __func__, rc);
+            /* If commit fail we are failing the whole operation */
+            return -2;
+        }
+
+        // txn contains enough records, wait for replicants
+        if ((data->nrecs % data->num_records_per_trans) == 0) {
+            if ((rc = trans_wait_for_seqnum(&data->iq, gbl_mynode, &ss)) != 0) {
+                sc_errf(data->s, "%s: error waiting for "
+                                 "replication rcode %d\n",
+                        __func__, rc);
+            } else if (gbl_sc_inco_chk) {
+                int num;
+                if ((num = bdb_get_num_notcoherent(thedb->bdb_env)) != 0) {
+                    if (num > inco_delay) { /* only goes up, or resets to 0 */
+                        inco_delay = num;
+                        sc_printf(data->s, "%d incoherent nodes - "
+                                           "throttle sc %dms\n",
+                                  num, inco_delay * mult);
+                    }
+                } else if (inco_delay != 0) {
+                    inco_delay = 0;
+                    sc_printf(data->s, "0 incoherent nodes - "
+                                       "pedal to the metal\n");
+                }
+            } else {
+                inco_delay = 0;
+            }
+        }
+
+        if (inco_delay) poll(0, 0, inco_delay * mult);
+
+        /* if we're in commitdelay mode, magnify the delay by 5 here */
+        if ((commitdelay = bdb_attr_get(data->from->dbenv->bdb_attr,
+                                        BDB_ATTR_COMMITDELAY)) != 0)
+            poll(NULL, 0, commitdelay * 5);
+
+        /* if sanc list is not ok, snooze for 100 ms */
+        if (!net_sanctioned_list_ok(data->from->dbenv->handle_sibling))
+            poll(NULL, 0, 100);
+
+        /* snooze for a bit if writes have been coming in */
+        if (gbl_sc_last_writer_time >= time_epoch() - 5) usleep(gbl_sc_usleep);
+        break;
+    } // end of rc check
+
+    ++gbl_sc_nrecs;
+    data->sc_genids[data->stripe] = genid;
+    now = time_epoch();
+
+    if (copy_sc_report_freq > 0 &&
+        now >= data->lasttime + copy_sc_report_freq) {
+        /* report progress to interested parties */
+        long long diff_nrecs = data->nrecs - data->prev_nrecs;
+        data->lasttime = now;
+        data->prev_nrecs = data->nrecs;
+
+        /* print thread specific stats */
+        sc_printf(
+            data->s,
+            "TABLE UPGRADE progress stripe %d changed genids %u progress %lld"
+            " recs +%lld conversions/sec %lld\n",
+            data->stripe, data->n_genids_changed, data->nrecs, diff_nrecs,
+            diff_nrecs / copy_sc_report_freq);
+
+        /* now do global sc data */
+        int res = print_global_sc_stat(data, now, copy_sc_report_freq);
+        /* check headroom only if this thread printed the global stats */
+        if (res && check_sc_headroom(data->s, data->from, data->to)) {
+            if (data->s->force) {
+                sc_printf(data->s, "Proceeding despite low disk headroom\n");
+            } else {
+                return -1;
+            }
+        }
+    }
+
+    if (data->s->fulluprecs)
+        return 1;
+    else if (recver == data->to->version)
+        return 0;
+    else if (data->nrecs >= data->s->partialuprecs)
+        return 0;
+    else
+        return 1;
+}
+
+static void *copy_records_thd(void *vdata)
+{
+    int rc;
+
+    struct convert_record_data *data = (struct convert_record_data *)vdata;
+    struct thr_handle *thr_self = thrman_self();
+    enum thrtype oldtype = THRTYPE_UNKNOWN;
+
+    // transfer thread type
+    if (data->isThread) thread_started("upgrade records");
+
+    if (thr_self) {
+        oldtype = thrman_get_type(thr_self);
+        thrman_change_type(thr_self, THRTYPE_SCHEMACHANGE);
+    } else {
+        thr_self = thrman_register(THRTYPE_SCHEMACHANGE);
+    }
+
+    if (data->isThread)
+        backend_thread_event(thedb, COMDB2_THR_EVENT_START_RDWR);
+
+    // initialize convert_record_data
+    data->outrc = -1;
+    data->lasttime = time_epoch();
+    data->num_records_per_trans = gbl_num_record_converts;
+    data->num_records_per_trans = gbl_num_record_converts;
+
+    data->dta_buf = malloc(data->from->lrl);
+    if (!data->dta_buf) {
+        sc_errf(data->s, "%s: ran out of memory trying to "
+                         "malloc dta_buf: %d\n",
+                __func__, data->from->lrl);
+        data->outrc = -1;
+        goto cleanup;
+    }
+
+    while ((rc = copy_records(data)) > 0) {
+        if (stopsc) {
+            if (data->isThread)
+                backend_thread_event(thedb, COMDB2_THR_EVENT_DONE_RDWR);
+            return NULL;
+        }
+    }
+
+    if (rc == -2) {
+        data->outrc = -1;
+    } else {
+        data->outrc = rc;
+    }
+
+cleanup:
+    if (data->outrc == 0) {
+        sc_printf(data->s,
+                  "successfully upgraded %lld records. skipped %lld records.\n",
+                  data->nrecs, data->nrecskip);
+    } else {
+        if (gbl_sc_abort) {
+            sc_errf(data->s, "conversion aborted after %lld records upgraded "
+                             "and %lld records skipped, "
+                             "while working on stripe %d\n",
+                    data->nrecs, data->nrecskip, data->stripe);
+        }
+        gbl_sc_thd_failed = data->stripe + 1;
+    }
+
+    convert_record_data_cleanup(data);
+
+    if (data->isThread) backend_thread_event(thedb, COMDB2_THR_EVENT_DONE_RDWR);
+
+    if (oldtype != THRTYPE_UNKNOWN) thrman_change_type(thr_self, oldtype);
+    return NULL;
+}
+
+
+int copy_all_records(struct dbtable *db, unsigned long long *sc_genids,
+                        struct schema_change_type *s)
+{
+    int idx;
+    int rc = 0;
+    int outrc = 0;
+
+    struct convert_record_data data = {0};
+
+    gbl_sc_thd_failed = 0;
+
+    data.from = db;
+    data.to = db;
+    data.sc_genids = sc_genids;
+    data.s = s;
+    data.scanmode = s->scanmode;
+
+    // set up internal block request
+    init_fake_ireq(thedb, &data.iq);
+    data.iq.usedb = db;
+    data.iq.opcode = OP_UPGRADE;
+    data.iq.debug = 0;
+
+    if (s->start_genid != 0) {
+        data.stripe = get_dtafile_from_genid(s->start_genid);
+        data.sc_genids[data.stripe] = s->start_genid;
+    }
+    copy_records_thd(&data);
+    outrc = data.outrc;
+    return 0;
+}
+
 /*
 ** Similar to convert_record(), with the following exceptions.
 ** 1. continue working on the rest stripes if some stripes failed
@@ -1585,6 +1939,7 @@ cleanup:
     if (oldtype != THRTYPE_UNKNOWN) thrman_change_type(thr_self, oldtype);
     return NULL;
 }
+
 
 int upgrade_all_records(struct dbtable *db, unsigned long long *sc_genids,
                         struct schema_change_type *s)

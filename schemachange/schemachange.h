@@ -131,6 +131,10 @@ struct schema_change_type {
     int addsp;
     int delsp;
     int defaultsp;
+
+    int tablecopy;
+    char *filename;
+
     int is_sfunc; /* lua scalar func */
     int is_afunc; /* lua agg func */
 
@@ -254,6 +258,8 @@ int create_queue(struct dbenv *, char *queuename, int avgitem, int pagesize,
 int start_table_upgrade(struct dbenv *dbenv, const char *tbl,
                         unsigned long long genid, int full, int partial,
                         int sync);
+int start_table_copy(struct dbenv *dbenv, const char *tbl,
+                        const char *file);
 
 /* Packs a schema_change_type struct into an opaque binary buffer so that it can
  * be stored in the low level meta table and the schema change can be resumed by

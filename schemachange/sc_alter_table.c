@@ -817,6 +817,60 @@ failed:
     return -1;
 }
 
+int do_copy_table(struct schema_change_type *s)
+{
+    int rc = SC_OK;
+    int i;
+
+    struct dbtable *db;
+    struct scinfo scinfo;
+
+    db = get_dbtable_by_name(s->table);
+    if (db == NULL) return SC_TABLE_DOESNOT_EXIST;
+
+    s->db = db;
+
+    if (s->start_genid != 0) s->scanmode = SCAN_COPY;
+
+    // check whether table is ready for upgrade
+    set_schemachange_options(s, db, &scinfo);
+    if ((rc = check_option_coherency(s, db, &scinfo))) return rc;
+
+    if (s->fulluprecs) {
+        print_schemachange_info(s, db, db);
+        sc_printf(s, "Starting FULL table upgrade.\n");
+    }
+
+    if (init_sc_genids(db, s)) {
+        sc_errf(s, "failed initilizing sc_genids\n");
+        return SC_LLMETA_ERR;
+    }
+
+    live_sc_off(db);
+    MEMORY_SYNC;
+
+    reset_sc_stat();
+
+    rc = copy_all_records(db, db->sc_genids, s);
+
+    if (stopsc)
+        rc = SC_MASTER_DOWNGRADE;
+    else if (rc) {
+        rc = SC_CONVERSION_FAILED;
+        if (gbl_sc_abort)
+            sc_errf(s, "upgrade_all_records aborted\n");
+        else
+            sc_errf(s, "upgrade_all_records failed\n");
+
+        for (i = 0; i < gbl_dtastripe; i++) {
+            sc_errf(s, "  > stripe %2d was at 0x%016llx\n", i,
+                    db->sc_genids[i]);
+        }
+    }
+
+    return rc;
+}
+
 int do_upgrade_table_int(struct schema_change_type *s)
 {
     int rc = SC_OK;
