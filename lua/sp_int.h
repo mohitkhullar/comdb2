@@ -49,6 +49,7 @@ struct stored_proc {
     uint8_t *buf;
     char *error;
     int  rc;
+    FILE *fd;
     SP parent;
 
     pthread_mutex_t *emit_mutex; //parent only

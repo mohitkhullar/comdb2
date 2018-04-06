@@ -3363,6 +3363,89 @@ static int dbstmt_rows_changed(Lua L)
     return 1;
 }
 
+static int db_csvopen(Lua lua)
+{
+    luaL_checkudata(lua, 1, dbtypes.db);
+    lua_remove(lua, 1);
+
+    SP sp = getsp(lua);
+
+    int rc;
+    const char *fname = lua_tostring(lua, -1);
+    if (fname == NULL) {
+        luabb_error(lua, sp, "expected file name");
+        return 2;
+    }
+
+    sp->fd = fopen(fname, "r");
+
+    if (sp->fd == -1) {
+        lua_pushnil(lua);
+        lua_pushinteger(lua, sp->rc);
+    } else {
+        lua_pushinteger(lua, 0); /* Success return code */
+    }
+    return 1;
+}
+
+
+static int db_csvread(Lua lua)
+{
+    luaL_checkudata(lua, 1, dbtypes.db);
+    lua_remove(lua, 1);
+
+    char * line = NULL;
+    size_t len = 0;
+    ssize_t read;
+
+    SP sp = getsp(lua);
+
+    read = getline(&line, &len, sp->fd);
+
+    if (read == -1) {
+        lua_pushnil(lua);
+        return 1;
+    }
+
+    CSVReader csv = {0};
+    csv.in = line;
+    csv.nLine = 1;
+    csv.lua = lua;
+    csv.cSeparator = ',';
+    csv_append_char(&csv, 0); /* To ensure sCsv.z is allocated */
+
+    lua_newtable(lua);
+    int cols = 0, lines = 0;
+    lua_newtable(lua);
+    while (csv_read_one_field(&csv)) {
+        lua_pushstring(lua, csv.z);
+        lua_rawseti(lua, -2, ++cols);
+        if (csv.cTerm != csv.cSeparator) {
+            lua_rawseti(lua, -2, ++lines);
+            if (csv.cTerm == 0) break;
+            cols = 0;
+            lua_newtable(lua);
+        }
+    }
+    free(csv.z);
+    free(line);
+    if (lines == 1) lua_rawgeti(lua, -1, 1);
+    return 1;
+}
+
+
+static int db_csvclose(Lua lua)
+{
+    luaL_checkudata(lua, 1, dbtypes.db);
+    lua_remove(lua, 1);
+
+    SP sp = getsp(lua);
+
+    fclose(sp->fd);
+
+    return 0;
+}
+
 static int db_exec(Lua lua)
 {
     luaL_checkudata(lua, 1, dbtypes.db);
@@ -4249,6 +4332,9 @@ static int db_bootstrap(Lua L)
 
 static const luaL_Reg db_funcs[] = {
     {"exec", db_exec},
+    {"csv_open", db_csvopen},
+    {"csv_read", db_csvread},
+    {"csv_close", db_csvclose},
     {"prepare", db_prepare},
     {"table", db_table},
     {"cast", db_cast},
