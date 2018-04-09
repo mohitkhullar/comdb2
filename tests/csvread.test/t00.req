@@ -1,0 +1,48 @@
+create table t1 {
+schema
+        {
+                cstring name[10]
+                cstring value[10]
+                cstring time[10]
+        }
+}$$
+
+create procedure csv_to_table version 'def' { 
+local function main()
+    db:csv_open("/home/mk/data/mohitdb1/agg.csv")
+    local lua_tbl = db:csv_read(",")
+    print(lua_tbl)
+    local tbl = db:table("t1")
+    print(tbl)
+    while(lua_tbl)
+    do
+        print(lua_tbl)
+        table.foreach(lua_tbl, print)
+        local x = {name = lua_tbl[1], value=lua_tbl[2], time=lua_tbl[3]}
+        tbl:insert(x)
+        lua_tbl = db:csv_read(",")
+    end
+end
+}$$
+
+put default procedure csv_to_table 'def'
+
+exec procedure csv_to_table()
+
+create procedure csv_to_table version 'def' { 
+local function main(file)
+    db:csv_open("DBDIR/agg.csv")
+    local lua_tbl = db:csv_read(",")
+    local tbl = db:table("t1")
+    while(lua_tbl)
+    do
+        local x = {name = lua_tbl[1], value=lua_tbl[2], time=lua_tbl[3]}
+        tbl:insert(x)
+        lua_tbl = db:csv_read(",")
+    end
+end
+}$$
+
+exec procedure csv_to_table()
+
+select * from t1

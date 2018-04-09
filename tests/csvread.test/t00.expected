@@ -1,0 +1,7 @@
+(version='def')
+[exec procedure csv_to_table()] failed with rc -3 [db:csv_open("/home/mk/data/mohi...]:3: File not in database directory
+(version='def')
+(name='dfgjhk', value=' efsdss', time=' k23')
+(name='absdcd', value=' ee1fsdss', time=' kss')
+(name='dh42bcd', value=' efsfsdss', time=' k42')
+(name='ab21cd', value=' ef23sdss', time=' k223')
