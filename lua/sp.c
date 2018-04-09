@@ -3424,7 +3424,7 @@ static int db_csvread(Lua lua)
             lua_rawseti(lua, -2, ++lines);
             if (csv.cTerm == 0) break;
             cols = 0;
-            lua_newtable(lua);
+            //lua_newtable(lua);
         }
     }
     free(csv.z);
