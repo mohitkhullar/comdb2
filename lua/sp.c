@@ -3369,12 +3369,14 @@ static int db_csvopen(Lua lua)
     lua_remove(lua, 1);
 
     SP sp = getsp(lua);
+    sp->fd = -1;
 
     int rc;
     const char *fname = lua_tostring(lua, -1);
     if (fname == NULL) {
-        luabb_error(lua, sp, "expected file name");
-        return 2;
+        return luaL_error(lua, "Expected file name");
+    } else if (strncmp(thedb->basedir, fname, strlen(thedb->basedir)) != 0) {
+        return luaL_error(lua, "File not in database directory");
     }
 
     sp->fd = fopen(fname, "r");
@@ -3396,12 +3398,21 @@ static int db_csvread(Lua lua)
 
     char * line = NULL;
     size_t len = 0;
+    char *cSeparator = ",";
     ssize_t read;
+
+    if (lua_gettop(lua) == 1) {
+       cSeparator = luabb_tostring(lua, 1);
+    }
 
     SP sp = getsp(lua);
 
-    read = getline(&line, &len, sp->fd);
+    if (sp->fd == -1) {
+        lua_pushnil(lua);
+        return 1;
+    }
 
+    read = getline(&line, &len, sp->fd);
     if (read == -1) {
         lua_pushnil(lua);
         return 1;
@@ -3411,25 +3422,21 @@ static int db_csvread(Lua lua)
     csv.in = line;
     csv.nLine = 1;
     csv.lua = lua;
-    csv.cSeparator = ',';
+    csv.cSeparator = cSeparator[0];
     csv_append_char(&csv, 0); /* To ensure sCsv.z is allocated */
 
     lua_newtable(lua);
     int cols = 0, lines = 0;
     lua_newtable(lua);
+
     while (csv_read_one_field(&csv)) {
         lua_pushstring(lua, csv.z);
         lua_rawseti(lua, -2, ++cols);
-        if (csv.cTerm != csv.cSeparator) {
-            lua_rawseti(lua, -2, ++lines);
-            if (csv.cTerm == 0) break;
-            cols = 0;
-            //lua_newtable(lua);
-        }
+         if (csv.cTerm == 0) break;
     }
+
     free(csv.z);
     free(line);
-    if (lines == 1) lua_rawgeti(lua, -1, 1);
     return 1;
 }
 
@@ -3442,6 +3449,7 @@ static int db_csvclose(Lua lua)
     SP sp = getsp(lua);
 
     fclose(sp->fd);
+    sp->fd = -1;
 
     return 0;
 }
