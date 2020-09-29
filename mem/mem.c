@@ -2069,7 +2069,10 @@ static int wildcard_match(const char *s, const char *p)
 
 static void *abortable_malloc(size_t sz)
 {
+    errno = 0;
     void *mem = malloc(sz);
+    if (mem && errno)
+        printf("This is not something that unpack expects\n");
     COMDB2MA_MEMCHK(mem, sz);
     return mem;
 }

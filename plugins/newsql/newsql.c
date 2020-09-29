@@ -2110,6 +2110,17 @@ retry_read:
         return NULL;
     }
 
+    int size = 2;
+    for (int i=0; i < 28; i++) {
+        errno = 0;
+        size = size*2;
+        void *test = comdb2_malloc_protobuf(size);
+        if (errno != 0)
+            printf("malloc test %p size %d errno %d errstr %s\n", test, size,  errno, strerror(errno));
+        comdb2_free_protobuf(test);
+
+    }
+
     while (1) {
         errno = 0; /* precondition: well-defined before call that may set */
         query = cdb2__query__unpack(&pb_alloc, bytes, (uint8_t *)p);
