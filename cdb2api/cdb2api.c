@@ -56,7 +56,7 @@ static char *SOCKPOOL_OTHER_NAME = NULL;
 #define COMDB2DB_NUM 32432
 #define MAX_BUFSIZE_ONSTACK 8192
 #define MAX_BIND_ARRAY 32768
-#define CDB2HOSTNAME_LEN 64
+#define CDB2HOSTNAME_LEN 128
 
 #define CDB2DBCONFIG_NOBBENV_DEFAULT "/opt/bb/etc/cdb2/config/comdb2db.cfg"
 static char CDB2DBCONFIG_NOBBENV[512] = CDB2DBCONFIG_NOBBENV_DEFAULT;
@@ -907,7 +907,7 @@ typedef struct cdb2_query_list_item {
 } cdb2_query_list;
 
 typedef struct cdb2_ssl_sess {
-    char host[64];
+    char host[128];
     SSL_SESSION *sess;
 } cdb2_ssl_sess;
 
@@ -959,7 +959,7 @@ struct cdb2_hndl {
     char dbname[DBNAME_LEN];
     char cluster[64];
     char type[TYPE_LEN];
-    char hosts[MAX_NODES][64];
+    char hosts[MAX_NODES][CDB2HOSTNAME_LEN];
     uint64_t timestampus; // client query timestamp of first try
     int ports[MAX_NODES];
     int hosts_connected[MAX_NODES];
