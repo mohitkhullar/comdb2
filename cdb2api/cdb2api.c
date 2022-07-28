@@ -907,7 +907,7 @@ typedef struct cdb2_query_list_item {
 } cdb2_query_list;
 
 typedef struct cdb2_ssl_sess {
-    char host[128];
+    char host[CDB2HOSTNAME_LEN];
     SSL_SESSION *sess;
 } cdb2_ssl_sess;
 
