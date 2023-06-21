@@ -185,13 +185,28 @@ static void *thd_appsock_int(appsock_work_args_t *w, int *keepsocket,
     while (1) {
         thrman_where(thr_self, NULL);
 
-        /* Read a line until and including '\n' */
-        rc = sbuf2gets(line, sizeof(line), sb);
+        char *position = NULL; // position of
 
-        if (rc <= 0)
+ retry_read:
+        /* Read a line until and including '\n' */
+        //rc = sbuf2gets(line, sizeof(line), sb);
+        rc = recv(sbuf2fileno(sb), line, sizeof(line), MSG_PEEK);
+        printf("Got line %s rc %d\n", line, rc);
+
+        if (rc < 0)
             break;
 
+        if (rc != 128  &&  (position = strchr(line, '\n')) == NULL)
+            goto retry_read;
+
+        //position[0] = '\0';
+
+        if (line[0] == '\026')
+            line[3] = '\0';
+
+
         st = 0;
+        printf("GOT COMMAND %s\n", line);
 
         tok = segtok(line, rc, &st, &ltok);
         if (ltok == 0)
@@ -210,7 +225,7 @@ static void *thd_appsock_int(appsock_work_args_t *w, int *keepsocket,
             sbuf2printf(sb, appsock_unknown);
             sbuf2flush(sb);
             num_bad_toks++;
-            continue;
+            return NULL;
         }
 
         total_toks++;

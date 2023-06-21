@@ -5368,11 +5368,12 @@ void do_appsock(netinfo_type *netinfo_ptr, struct sockaddr_in *cliaddr,
             sbuf2close(sb);
             return;
         }
-    } else if (firstbyte != sbuf2ungetc(firstbyte, sb)) {
+    }
+    /* else if (firstbyte != sbuf2ungetc(firstbyte, sb)) {
         logmsg(LOGMSG_ERROR, "sbuf2ungetc failed %s:%d\n", __FILE__, __LINE__);
         sbuf2close(sb);
         return;
-    }
+    }*/
 
 
     if (gbl_server_admin_mode && !admin) {
@@ -5653,6 +5654,10 @@ static void *accept_thread(void *arg)
         /* the above poll ensures that this will not block */
 
         uint8_t firstbyte;
+
+        recv(new_fd, &firstbyte, sizeof(uint8_t), MSG_PEEK);
+
+        /*
         rc = read_stream(netinfo_ptr, NULL, sb, &firstbyte, 1);
         if (rc != 1) {
             findpeer(new_fd, paddr, sizeof(paddr));
@@ -5661,6 +5666,7 @@ static void *accept_thread(void *arg)
             sbuf2close(sb);
             continue;
         }
+        */
 
         /* appsock reqs have a non-0 first byte */
         if (firstbyte > 0) {

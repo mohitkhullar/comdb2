@@ -2542,10 +2542,10 @@ static void handle_appsock(netinfo_type *netinfo_ptr, struct sockaddr_in *ss, in
     evbuffer_free(buf);
     make_socket_blocking(fd);
     SBUF2 *sb = sbuf2open(fd, 0);
-    sbuf2setbufsize(sb, netinfo_ptr->bufsz);
+    /*sbuf2setbufsize(sb, netinfo_ptr->bufsz);
     for (int i = n - 1; i > 0; --i) {
         sbuf2ungetc(req[i], sb);
-    }
+    }*/
     do_appsock(netinfo_ptr, ss, sb, first_byte);
 }
 
@@ -2621,12 +2621,18 @@ static void do_read(int fd, short what, void *data)
     check_base_thd();
     struct accept_info *a = data;
     struct evbuffer *buf = evbuffer_new();
+    /*
+    struct evbuffer_iovec v[2];
+    ssize_t n = evbuffer_peek(buf, 1, 0, v, 2);
     ssize_t n = evbuffer_read(buf, fd, SBUF2UNGETC_BUF_MAX);
     if (n <= 0) {
         accept_info_free(a);
         return;
     }
+    */
     uint8_t first_byte;
+    recv(fd, &first_byte, sizeof(uint8_t), MSG_PEEK);
+
     evbuffer_copyout(buf, &first_byte, 1);
     if (first_byte == 0) {
         evbuffer_drain(buf, 1);
