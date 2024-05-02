@@ -2221,6 +2221,24 @@ static void *newsql_get_authdata(struct sqlclntstate *clnt)
     return NULL;
 }
 
+static void *newsql_get_serialized_authdata(struct sqlclntstate *clnt)
+{
+    struct newsql_appdata *appdata = clnt->appdata;
+    if (appdata) {
+        CDB2SQLQUERY *sql_query = appdata->sqlquery;
+        if (sql_query && sql_query->identity) {
+            if (externalMakeNewsqlAuthData) {
+                return externalMakeNewsqlAuthData(clnt->authdata, sql_query->identity);
+            }
+        }
+    }
+    if (clnt->authdata) {
+        free(clnt->authdata);
+        clnt->authdata = NULL;
+    }
+    return NULL;
+}
+
 void newsql_setup_clnt(struct sqlclntstate *clnt)
 {
     struct newsql_appdata *appdata = clnt->appdata;
