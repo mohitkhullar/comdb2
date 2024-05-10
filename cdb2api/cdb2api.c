@@ -6479,7 +6479,7 @@ int cdb2_init_ssl(int init_libssl, int init_libcrypto)
     return rc;
 }
 
-void cdb2_setIdentity(cdb2_hndl_tp *hndl, void *id)
+void cdb2_setIdentityBlob(cdb2_hndl_tp *hndl, void *id)
 {
     hndl->id_blob = (CDB2SQLQUERY__IdentityBlob *)id;
 }

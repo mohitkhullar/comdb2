@@ -253,7 +253,7 @@ int cdb2_clear_contexts(cdb2_hndl_tp *hndl);
 int cdb2_init_ssl(int init_libssl, int init_libcrypto);
 int cdb2_is_ssl_encrypted(cdb2_hndl_tp *hndl);
 
-void cdb2_setIdentity(cdb2_hndl_tp *hndl, void *id);
+void cdb2_setIdentityBlob(cdb2_hndl_tp *hndl, void *id);
 
 int cdb2_clear_ack(cdb2_hndl_tp *hndl);
 
