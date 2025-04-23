@@ -5235,6 +5235,9 @@ void cleanup_clnt(struct sqlclntstate *clnt)
 int gbl_unexpected_last_type_warn = 1;
 int gbl_unexpected_last_type_abort = 0;
 
+int bdb_list_init_tmp_tables(bdb_state_type *bdb_state);
+void bdb_list_close_tmp_tables(bdb_state_type *bdb_state);
+
 void reset_clnt(struct sqlclntstate *clnt, int initial)
 {
     if (initial) {
@@ -5253,6 +5256,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
             clnt->authz_read_tables = hash_init_str(0);
             clnt->authz_write_tables = hash_init_str(0);
         }
+        bdb_list_init_tmp_tables(thedb->bdb_env);
     } else {
        clnt->sql_since_reset = 0;
        clnt->num_resets++;
@@ -5266,6 +5270,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
                abort();
        }
        reset_authz_hash(clnt, 0);
+       bdb_list_close_tmp_tables(thedb->bdb_env);
     }
     clnt->allow_make_request = 0;
 

@@ -214,6 +214,7 @@ struct temp_table {
     unsigned long long inmemsz;
     unsigned long long cachesz;
     arr_elem_t *elements;
+    LINKC_T(struct temp_table) lnk;
 };
 
 enum { TMPTBL_PRIORITY, TMPTBL_WAIT };
@@ -1454,9 +1455,22 @@ done:
     return rc;
 }
 
+void bdb_list_init_tmp_tables(bdb_state_type *bdb_state) {
+    listc_init(&bdb_state->tmptables, offsetof(struct temp_table, lnk));
+}
+
+int bdb_temp_table_close(bdb_state_type *bdb_state, struct temp_table *tbl, int *bdberr) {
+    if (bdb_state->parent)
+        bdb_state = bdb_state->parent;
+
+    listc_abl(&bdb_state->tmptables, tbl);
+
+    return 0;
+}
+
 /* XXX todo - call bdb_temp_table_truncate() and put on a list at parent
    bdb_state */
-int bdb_temp_table_close(bdb_state_type *bdb_state, struct temp_table *tbl,
+int bdb_temp_table_close_int(bdb_state_type *bdb_state, struct temp_table *tbl,
                          int *bdberr)
 {
     struct temp_cursor *cur, *temp;
@@ -1560,6 +1574,15 @@ int bdb_temp_table_close(bdb_state_type *bdb_state, struct temp_table *tbl,
 
     dbgtrace(3, "temp_table_close() = %d %s", rc, db_strerror(rc));
     return rc;
+}
+
+int bdb_list_close_tmp_tables(bdb_state_type *bdb_state) {
+    struct temp_table *tbl, *temp;
+    int err;
+    LISTC_FOR_EACH_SAFE(&bdb_state->tmptables, tbl, temp, lnk) {
+        bdb_temp_table_close_int(bdb_state, tbl, &err);
+    }
+    return 0;
 }
 
 int bdb_temp_table_destroy_lru(struct temp_table *tbl,

@@ -1066,6 +1066,7 @@ struct bdb_state_tag {
     pthread_mutex_t sc_redo_lk;
     pthread_cond_t sc_redo_wait;
     LISTC_T(struct sc_redo_lsn) sc_redo_list;
+    LISTC_T(struct temp_table) tmptables;
 
     /* cached file versions */
     unsigned long long dtavers[1 + MAXBLOBS];
