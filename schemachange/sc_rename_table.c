@@ -163,9 +163,6 @@ int finalize_rename_table(struct ireq *iq, struct schema_change_type *s,
 
     live_sc_off(db);
 
-    if (oldname)
-        free(oldname);
-
     return rc;
 
 recover_memory:
