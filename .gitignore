@@ -90,6 +90,7 @@ contrib/docker/volumes
 .clangd
 .DS_Store
 tags
+CLAUDE.md
 compile_commands.json
 cscope.*
 CMakeLists.txt.user

@@ -1571,6 +1571,7 @@ static int __lock_wrlock_exclusive(char *dbname)
     int rc = FDB_NOERR;
     int idx = -1;
     int len = strlen(dbname) + 1;
+    int users;
 
     if (_test_trap_dlock1 == 2) {
         _test_trap_dlock1++;
@@ -1588,10 +1589,44 @@ static int __lock_wrlock_exclusive(char *dbname)
             return FDB_ERR_FDB_NOTFOUND;
         }
 
-        Pthread_rwlock_wrlock(&fdb->h_rwlock);
+        /* Use trylock to avoid blocking while holding fdbs.arr_lock.
+         * This prevents deadlock if another thread holds fdb->h_rwlock
+         * and needs fdbs.arr_lock. */
+        rc = pthread_rwlock_trywrlock(&fdb->h_rwlock);
 
-        /* we got the lock, are there any lockless users ? */
-        if (fdb->users > 1) {
+        if (rc == EBUSY) {
+            /* Can't get lock immediately, release arr_lock and retry */
+            Pthread_rwlock_unlock(&fdbs.arr_lock);
+
+            /* Check for BDB deadlock before retrying */
+            struct sql_thread *thd = pthread_getspecific(query_info_key);
+            if (thd) {
+                rc = clnt_check_bdb_lock_desired(thd->clnt);
+                if (rc) {
+                    logmsg(LOGMSG_ERROR, "%s:%d recover_deadlock returned %d\n",
+                           __func__, __LINE__, rc);
+                    return FDB_ERR_GENERIC;
+                }
+            }
+
+            /* Brief sleep to avoid busy-spinning */
+            poll(NULL, 0, 1);
+            continue;
+        } else if (rc != 0) {
+            /* Some other error acquiring the lock */
+            Pthread_rwlock_unlock(&fdbs.arr_lock);
+            logmsg(LOGMSG_ERROR, "%s: pthread_rwlock_trywrlock failed with rc=%d\n",
+                   __func__, rc);
+            return FDB_ERR_GENERIC;
+        }
+
+        /* We got the lock, are there any lockless users?
+         * Must check under users_mtx for proper synchronization. */
+        Pthread_mutex_lock(&fdb->users_mtx);
+        users = fdb->users;
+        Pthread_mutex_unlock(&fdb->users_mtx);
+
+        if (users > 1) {
             Pthread_rwlock_unlock(&fdb->h_rwlock);
             Pthread_rwlock_unlock(&fdbs.arr_lock);
 
@@ -1600,8 +1635,11 @@ static int __lock_wrlock_exclusive(char *dbname)
                for a bdb write lock to be processed */
 
             struct sql_thread *thd = pthread_getspecific(query_info_key);
-            if (!thd)
+            if (!thd) {
+                /* Brief sleep before retry */
+                poll(NULL, 0, 1);
                 continue;
+            }
 
             rc = clnt_check_bdb_lock_desired(thd->clnt);
             if (rc) {
@@ -1610,6 +1648,8 @@ static int __lock_wrlock_exclusive(char *dbname)
                 return FDB_ERR_GENERIC;
             }
 
+            /* Brief sleep before retry */
+            poll(NULL, 0, 1);
             continue;
         } else {
             rc = FDB_NOERR;

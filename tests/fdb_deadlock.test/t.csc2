@@ -1,0 +1,10 @@
+schema
+{
+    int id
+    cstring name[64]
+}
+
+keys
+{
+    "PK" = id
+}
