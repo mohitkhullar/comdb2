@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -e
+
+echo "Running cdb2api memory tests"
+
+# Path to the suppression file
+SUPP_FILE="${TESTSROOTDIR}/cdb2api_memtest.test/cdb2api_memtest.supp"
+
+# Set up the command prefix based on DEBUGGER environment variable
+CMD_PREFIX=""
+if [[ -n "${DEBUGGER}" ]]; then
+    case "${DEBUGGER}" in
+        valgrind)
+            CMD_PREFIX="valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1"
+            if [[ -f "${SUPP_FILE}" ]]; then
+                CMD_PREFIX="${CMD_PREFIX} --suppressions=${SUPP_FILE}"
+                echo "Using suppression file: ${SUPP_FILE}"
+            fi
+            echo "Running with valgrind memory leak detection"
+            ;;
+        memcheck)
+            CMD_PREFIX="valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1"
+            if [[ -f "${SUPP_FILE}" ]]; then
+                CMD_PREFIX="${CMD_PREFIX} --suppressions=${SUPP_FILE}"
+                echo "Using suppression file: ${SUPP_FILE}"
+            fi
+            echo "Running with valgrind memcheck"
+            ;;
+        *)
+            CMD_PREFIX="${DEBUGGER}"
+            echo "Running with debugger: ${DEBUGGER}"
+            ;;
+    esac
+fi
+
+# Run the memtest executable
+${CMD_PREFIX} ${TESTSBUILDDIR}/cdb2api_memtest ${DBNAME} default
+
+echo "cdb2api_memtest - PASSED"

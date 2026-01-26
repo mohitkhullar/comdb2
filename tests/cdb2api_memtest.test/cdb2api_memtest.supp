@@ -1,0 +1,137 @@
+# Valgrind suppression file for cdb2api_memtest
+# These suppressions cover known "still reachable" allocations that are
+# intentionally not freed (one-time global initialization)
+
+# OpenSSL initialization - these are allocated once and never freed
+{
+   openssl_init_ssl
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:OPENSSL_init_ssl
+}
+
+{
+   openssl_init_crypto
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:OPENSSL_init_crypto
+}
+
+{
+   openssl_add_all_algorithms
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:OPENSSL_add_all_algorithms_noconf
+}
+
+{
+   openssl_ssl_library_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:SSL_library_init
+}
+
+{
+   openssl_ssl_load_error_strings
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:SSL_load_error_strings
+}
+
+{
+   openssl_err_load_crypto_strings
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:ERR_load_crypto_strings
+}
+
+{
+   openssl_ssl_ctx_new
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:SSL_CTX_new
+}
+
+# OpenSSL internal allocations
+{
+   openssl_crypto_malloc
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:CRYPTO_malloc
+}
+
+{
+   openssl_crypto_zalloc
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:CRYPTO_zalloc
+}
+
+# cdb2api global initialization - allocated once, intentionally not freed
+{
+   cdb2api_do_init_once
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:do_init_once
+}
+
+{
+   cdb2api_ssl_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:cdb2_init_ssl
+}
+
+# protobuf-c allocations
+{
+   protobuf_c_default_allocator
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:protobuf_c_default_allocator
+}
+
+# pthread/glibc one-time initialization
+{
+   pthread_once
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:pthread_once
+}
+
+{
+   dl_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:_dl_init
+}
+
+# zlib initialization
+{
+   zlib_inflate_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:inflateInit*
+}
+
+{
+   zlib_deflate_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:deflateInit*
+}
