@@ -3,7 +3,7 @@
 ulimit -c unlimited
 
 # wait for keys
-mkdir ~/.ssh
+mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 cp /common/id_rsa ~/.ssh/
 chmod 700 ~/.ssh/id_rsa

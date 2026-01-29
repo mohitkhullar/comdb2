@@ -3,12 +3,12 @@
 ulimit -c unlimited
 
 # create and distribute ssh key
-mkdir ~/.ssh
+mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 cp /common/id_rsa* ~/.ssh/
 chmod 700 ~/.ssh/id_rsa
 cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
-export CLUSTER="$(cat common/cluster)"
+export CLUSTER="$(cat /common/cluster)"
 echo "CLUSTER is $CLUSTER"
 export DEDICATED_NETWORK_SUFFIXES='-n3 -n4'
 

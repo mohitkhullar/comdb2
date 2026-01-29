@@ -5,6 +5,7 @@ nodeprefix="m"
 
 script_args=()
 cmake_flags=(-DCOMDB2_TEST=1)
+keep_containers=0
 while [[ $1 = -* ]]; do
     if [[ "$1" = "-s" ]] || [[ "$1" = "--source" ]]; then
         shift
@@ -26,6 +27,8 @@ while [[ $1 = -* ]]; do
         script_args+=("$1")
     elif [[ "$1" = "--coverage" ]]; then
         cmake_flags+=(-DGENERATE_COVERAGE=1)
+    elif [[ "$1" = "-k" ]] || [[ "$1" = "--keep" ]]; then
+        keep_containers=1
     fi
     shift
 done
@@ -99,6 +102,7 @@ services:
             dockerfile: tests/docker/Dockerfile.db
             args:
                 - REVISION=$prefix
+        working_dir: /comdb2/tests
         volumes:
             - ./common:/common
             - ./common/c1:/dedicated
@@ -109,11 +113,20 @@ EOF
 EOF
 }
 
+if [[ $keep_containers -eq 1 ]]; then
+# Write command with proper escaping
+echo "        command: [\"bash\", \"-c\", \"/client $commands && echo 'Test finished.' && sleep infinity\"]" >> $compose
+cat >> $compose <<EOF
+        cap_add:
+            - SYS_PTRACE
+EOF
+else
 cat >> $compose <<EOF
         command: /client $commands
         cap_add:
             - SYS_PTRACE
 EOF
+fi
 
 for node in $containers; do
 cat >> $compose <<EOF
@@ -153,9 +166,30 @@ EOF
 done
 
 # Make sure that root can access common/ under SELinux
-chmod 777 -R common
+chmod -R 777 common
 
-docker-compose build
-docker-compose up --abort-on-container-exit
-docker-compose down --rmi all --volumes
-docker-compose rm -f
+docker compose build
+
+if [[ $keep_containers -eq 1 ]]; then
+    echo "Starting containers with --keep flag (containers will remain after test)..."
+    docker compose up -d
+    echo "Following client logs (Ctrl+C to detach, containers will keep running)..."
+    docker logs -f c1 || true
+    echo ""
+    echo "========================================"
+    echo "Test finished. Containers are still running."
+    echo ""
+    echo "Inspect with:"
+    echo "  docker logs c1              # view client/test output"
+    echo "  docker logs m1              # view node 1 logs"
+    echo "  docker exec -it c1 bash     # shell into client"
+    echo "  docker exec -it m1 bash     # shell into node 1"
+    echo ""
+    echo "Cleanup with:"
+    echo "  cd $(pwd) && docker compose down --rmi all --volumes"
+    echo "========================================"
+else
+    docker compose up --abort-on-container-exit
+    docker compose down --rmi all --volumes
+    docker compose rm -f
+fi
