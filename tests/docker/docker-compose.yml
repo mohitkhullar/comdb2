@@ -1,0 +1,99 @@
+version: '2'
+
+networks:
+    primary:
+    n3:
+    n4:
+
+services:
+    client:
+        container_name: c1
+        hostname: c1
+        labels:
+            what: "testclient"
+        networks:
+            - primary
+        build:
+            context: /Users/mkhullar1/code/comdb2
+            dockerfile: tests/docker/Dockerfile.db
+            args:
+                - REVISION=b701ff847
+        working_dir: /comdb2/tests
+        volumes:
+            - ./common:/common
+            - ./common/c1:/dedicated
+        command: /client export CLUSTER='m1 m2 m3' && make remsql_auth_parallel BUILDDIR=/comdb2/build
+        cap_add:
+            - SYS_PTRACE
+    m1:
+        container_name: m1
+        hostname: m1
+        labels:
+            what: "testserver"
+        networks:
+            primary:
+            n3:
+                aliases:
+                    - m1-n3
+            n4:
+                aliases:
+                    - m1-n4
+        build:
+            context: /Users/mkhullar1/code/comdb2
+            dockerfile: tests/docker/Dockerfile.db
+            args:
+                - REVISION=b701ff847
+        volumes:
+            - ./common:/common
+            - ./common/m1:/dedicated
+        command: /server
+        cap_add:
+            - SYS_PTRACE
+    m2:
+        container_name: m2
+        hostname: m2
+        labels:
+            what: "testserver"
+        networks:
+            primary:
+            n3:
+                aliases:
+                    - m2-n3
+            n4:
+                aliases:
+                    - m2-n4
+        build:
+            context: /Users/mkhullar1/code/comdb2
+            dockerfile: tests/docker/Dockerfile.db
+            args:
+                - REVISION=b701ff847
+        volumes:
+            - ./common:/common
+            - ./common/m2:/dedicated
+        command: /server
+        cap_add:
+            - SYS_PTRACE
+    m3:
+        container_name: m3
+        hostname: m3
+        labels:
+            what: "testserver"
+        networks:
+            primary:
+            n3:
+                aliases:
+                    - m3-n3
+            n4:
+                aliases:
+                    - m3-n4
+        build:
+            context: /Users/mkhullar1/code/comdb2
+            dockerfile: tests/docker/Dockerfile.db
+            args:
+                - REVISION=b701ff847
+        volumes:
+            - ./common:/common
+            - ./common/m3:/dedicated
+        command: /server
+        cap_add:
+            - SYS_PTRACE
