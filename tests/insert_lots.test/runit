@@ -21,6 +21,44 @@ assertthdpoolcntzero()
     fi
 }
 
+wait_for_coherency()
+{
+    local timeout=${1:-120}
+    local j=0
+    echo "Waiting for cluster coherency (timeout: ${timeout}s)..."
+
+    if [[ -z "$CLUSTER" ]]; then
+        # Single node - just check connectivity
+        while [[ $j -lt $timeout ]]; do
+            if cdb2sql --tabs ${CDB2_OPTIONS} $DBNAME default "select 1" &>/dev/null; then
+                echo "Cluster coherent after ${j}s"
+                return 0
+            fi
+            sleep 1
+            let j=j+1
+        done
+    else
+        # Multi-node cluster - check all nodes
+        while [[ $j -lt $timeout ]]; do
+            local all_ok=1
+            for node in $CLUSTER; do
+                if ! cdb2sql --tabs ${CDB2_OPTIONS} $DBNAME --host $node "select 1" &>/dev/null; then
+                    all_ok=0
+                    break
+                fi
+            done
+            if [[ $all_ok -eq 1 ]]; then
+                echo "Cluster coherent after ${j}s"
+                return 0
+            fi
+            sleep 1
+            let j=j+1
+        done
+    fi
+
+    failexit "Cluster did not become coherent within ${timeout}s"
+}
+
 gen_series_test()
 {
     cdb2sql --tabs ${CDB2_OPTIONS} $dbnm default "drop table if exists t1"
@@ -48,6 +86,10 @@ insert_lots_test()
     echo "Running with TRANSIZE: ${TRANSIZE}"
 
     time ${TESTSBUILDDIR}/insert_lots_mt --dbname $dbnm --numthreads $THRDS --cntperthread $CNT --iterations $ITERATIONS --transize $TRANSIZE> ins.out
+
+    # Wait for cluster to become coherent after heavy inserts
+    wait_for_coherency 120
+
     assertcnt t1 $((THRDS * CNT * ITERATIONS))
     do_verify t1
     local node=`cdb2sql ${CDB2_OPTIONS} -s --tabs $dbnm default 'SELECT comdb2_host()'`

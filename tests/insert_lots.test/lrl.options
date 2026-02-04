@@ -1,1 +1,33 @@
 pagesizeix 1024
+
+# Cluster tuning to prevent nodes going incoherent during high-volume inserts
+# Based on logfill.test and incoherent_slow.test configurations
+
+# Catchup window - allow replicants to lag further before becoming incoherent
+setattr CATCHUP_WINDOW 80000000
+setattr CATCHUP_ON_COMMIT 1
+
+# SQL logfill - helps replicants catch up faster by applying logs in batches
+sql_logfill 1
+sql_logfill_apply_thread 1
+sql_logfill_lookahead_records 200000
+
+# Parallel replication - use multiple threads to apply logs
+setattr REP_PROCESSORS 4
+setattr REP_WORKERS 8
+
+# In-memory replication database - reduces I/O bottleneck
+inmem_repdb 1
+inmem_repdb_maxlog 50000
+
+# Increase tolerance for slow replicants (default is 2, higher = more tolerant)
+slowrep_incoherent_factor 50
+
+# Increase cache to handle concurrent inserts
+cache 1 gb
+
+# Increase max OSQL transfer size for large transactions
+maxosqltransfer 1000000
+
+# Network polling for better cluster communication
+netpoll 2000
