@@ -8040,13 +8040,13 @@ void create_default_consumer_sp(Parse *p, char *spname)
     strcpy(sc->tablename, spname);
     strcpy(sc->fname, version);
     sc->newcsc2 = strdup(default_consumer);
-    comdb2PrepareSC(v, p, 0, sc, &comdb2SqlSchemaChange, (vdbeFuncArgFree)&free_schema_change_type);
+    comdb2PrepareSC(v, p, 0, sc, &comdb2SqlSchemaChange_tran, (vdbeFuncArgFree)&free_schema_change_type);
 
     sc = new_schemachange_type();
     sc->kind = SC_DEFAULTSP;
     strcpy(sc->tablename, spname);
     strcpy(sc->fname, version);
-    comdb2prepareNoRows(v, p, 0, sc, &comdb2SqlSchemaChange, (vdbeFuncArgFree)&free_schema_change_type);
+    comdb2prepareNoRows(v, p, 0, sc, &comdb2SqlSchemaChange_tran, (vdbeFuncArgFree)&free_schema_change_type);
 }
 
 void create_default_consumer_sp_atomic(Parse *p, char *spname, const char * tablename_for_q, const char * newcsc2_for_q, int seq_for_q, char dest_for_q[64])

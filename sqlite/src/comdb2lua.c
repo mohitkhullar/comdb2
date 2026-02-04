@@ -252,7 +252,7 @@ void comdb2CreateTrigger(Parse *parse, int consumer, int seq, Token *proc, Cdb2T
 
         if (consumer == COMDB2_DEFAULT_CONSUMER) {
             create_default_consumer_sp(parse, spname);
-            comdb2prepareNoRows(v, parse, 0, sc, comdb2SqlSchemaChange, (vdbeFuncArgFree)&free_schema_change_type);
+            comdb2prepareNoRows(v, parse, 0, sc, &comdb2SqlSchemaChange_tran, (vdbeFuncArgFree)&free_schema_change_type);
         } else {
             comdb2prepareNoRows(v, parse, 0, sc, &comdb2SqlSchemaChange_tran, (vdbeFuncArgFree)&free_schema_change_type);
         }
