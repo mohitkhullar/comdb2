@@ -1,2 +1,3 @@
 cache 1 gb
 do debug recover_deadlock_evbuffer
+prefer_non_blocking_coherency_check 0
