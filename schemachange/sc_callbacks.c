@@ -488,6 +488,58 @@ int live_sc_post_upd_record(struct ireq *iq, void *trans,
 #endif
 
     int rc;
+    blob_status_t saved_blobs[MAXBLOBS] = {{0}};
+    blob_buffer_t sc_blobs[MAXBLOBS] = {{0}};
+    blob_buffer_t sc_del_blobs[MAXBLOBS] = {{0}};
+    blob_buffer_t sc_add_blobs[MAXBLOBS] = {{0}};
+
+    /* Fetch blob data from disk for the .ONDISK -> .NEW..ONDISK conversion.
+     * The incoming 'blobs', 'oldblobs', and 'newblobs' may only contain data
+     * for blobs modified by the update.  Unchanged blobs (e.g., vutf8 fields
+     * stored out-of-line) will be missing, causing vutf8_convert to fail with
+     * "missing inblob".  Fetch all blobs from disk and merge with the incoming
+     * blobs so that the conversion has complete data.  This must happen before
+     * we switch iq->usedb to sc_to, as the blobs are in the source table.
+     *
+     * upd_new_record uses blobs for data conversion and oldblobs/newblobs for
+     * index conversions — all three need complete blob data.  Each must be a
+     * separate copy because unodhfy_and_clone in upd_new_record modifies the
+     * source blob array in-place. */
+    rc = save_old_blobs(iq, trans, ".ONDISK", new_dta, 2, newgenid,
+                        saved_blobs);
+    if (rc != 0) {
+        logmsg(LOGMSG_ERROR, "%s: save_old_blobs failed rc %d\n", __func__,
+               rc);
+        return rc;
+    }
+
+    /* Create three independent copies of the fetched blobs.
+     * Strip ODH headers using the source table's handle, since
+     * upd_new_record will use sc_to's handle which may differ. */
+    blob_status_to_blob_buffer(saved_blobs, sc_blobs);
+    blob_status_to_blob_buffer(saved_blobs, sc_del_blobs);
+    blob_status_to_blob_buffer(saved_blobs, sc_add_blobs);
+    for (int i = 0; i < MAXBLOBS; i++) {
+        if (sc_blobs[i].exists)
+            unodhfy_blob_buffer(usedb, &sc_blobs[i], i);
+        if (sc_del_blobs[i].exists)
+            unodhfy_blob_buffer(usedb, &sc_del_blobs[i], i);
+        if (sc_add_blobs[i].exists)
+            unodhfy_blob_buffer(usedb, &sc_add_blobs[i], i);
+    }
+
+    /* Merge: incoming blobs from the update take priority (they have the
+     * latest data), but skip blob fillers (length == OSQL_BLOB_FILLER_LENGTH)
+     * which are placeholders meaning "blob unchanged".  For those, keep the
+     * data we fetched from disk. */
+    for (int i = 0; i < MAXBLOBS; i++) {
+        if (blobs[i].exists &&
+            blobs[i].length != OSQL_BLOB_FILLER_LENGTH) {
+            free(sc_blobs[i].data);
+            sc_blobs[i] = blobs[i];
+        }
+    }
+
     /* point to the new table */
     iq->usedb = usedb->sc_to;
 
@@ -506,12 +558,13 @@ int live_sc_post_upd_record(struct ireq *iq, void *trans,
     iq->usedb = _distribute_rows(usedb, iq->usedb, oldgenid);
     if (!iq->usedb) {
         iq->usedb = usedb;
-        return -1;
+        rc = -1;
+        goto cleanup;
     }
 
     rc = upd_new_record(iq, trans, oldgenid, old_dta, newgenid, new_dta,
-                        ins_keys, del_keys, od_len, updCols, blobs, deferredAdd,
-                        oldblobs, newblobs, 1);
+                        ins_keys, del_keys, od_len, updCols, sc_blobs,
+                        deferredAdd, sc_del_blobs, sc_add_blobs, 1);
     iq->usedb = usedb;
     if (rc != 0 && rc != RC_INTERNAL_RETRY) {
         logmsg(LOGMSG_ERROR, "%s: rcode %d for update genid 0x%llx to 0x%llx\n",
@@ -523,6 +576,22 @@ int live_sc_post_upd_record(struct ireq *iq, void *trans,
     }
 
     ATOMIC_ADD32(usedb->sc_updates, 1);
+
+cleanup:
+    /* Free sc_blobs entries that we allocated from disk.  Entries in
+     * sc_blobs that came from the caller's blobs array (via merge)
+     * must not be freed here. sc_del_blobs and sc_add_blobs are
+     * entirely our allocations. */
+    for (int i = 0; i < MAXBLOBS; i++) {
+        if (!blobs[i].exists ||
+            blobs[i].length == OSQL_BLOB_FILLER_LENGTH) {
+            free(sc_blobs[i].data);
+            sc_blobs[i].data = NULL;
+        }
+    }
+    free_blob_buffers(sc_del_blobs, MAXBLOBS);
+    free_blob_buffers(sc_add_blobs, MAXBLOBS);
+    free_blob_status_data(saved_blobs);
     if (iq->debug) {
         reqpopprefixes(iq, 2);
     }

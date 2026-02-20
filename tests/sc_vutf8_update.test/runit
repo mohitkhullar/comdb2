@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+bash -n "$0" | exit 1
+
+# Test: Concurrent updates of non-blob fields during a live schema change
+# on a table with vutf8 fields stored out-of-line as blobs.
+#
+# This tests the fix for a bug where live_sc_post_upd_record failed with
+# "vutf8_convert: missing inblob" because it did not fetch blob data from
+# disk for unchanged blobs before the .ONDISK -> .NEW..ONDISK conversion.
+#
+# The schema uses vutf8 v[32] so that our ~180 byte strings are stored
+# out-of-line as blobs (they exceed the 32-byte inline storage).
+# The alter changes to vutf8 v[256], causing the conversion to read
+# blob data and write it inline — this is the path that triggers the bug.
+
+source ${TESTSROOTDIR}/tools/runit_common.sh
+set -x
+
+if [ "x${DBNAME}" == "x" ] ; then
+    echo "need a DB name"
+    exit 1
+fi
+
+tbl=t1
+nrecs=200
+
+function insert_records
+{
+    typeset loc_nrecs=$1
+    echo "Inserting $loc_nrecs records with long vutf8 values."
+    typeset j=0
+
+    while [[ $j -lt $loc_nrecs ]]; do
+        # vutf8 v[32] means inline storage is 32 bytes.  These ~180 byte
+        # strings exceed that and will be stored out-of-line as blobs.
+        echo "insert into $tbl(a, b, v) values ($j, $j, 'This_is_a_long_vutf8_string_that_will_be_stored_as_a_blob_for_record_number_${j}_padding_to_ensure_out_of_line_storage_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')"
+        let j=j+1
+    done | $CDB2SQL_EXE ${CDB2_OPTIONS} ${DBNAME} default &> insert.out || failexit "insert_records error"
+    echo "Done inserting $loc_nrecs records."
+}
+
+function update_nonblob_fields
+{
+    typeset loc_nrecs=$1
+    echo "Updating non-blob fields on $loc_nrecs records (leaving vutf8 unchanged)."
+    typeset j=0
+
+    while [[ $j -lt $loc_nrecs ]]; do
+        echo "update $tbl set b = b + 1 where a = $j"
+        let j=j+1
+    done | $CDB2SQL_EXE ${CDB2_OPTIONS} ${DBNAME} default &> update.out 2>&1
+    return $?
+}
+
+echo "Running test in machine $(hostname):${PWD}"
+
+# Create the table with vutf8 v[32] — strings > 32 bytes are stored as blobs
+$CDB2SQL_EXE ${CDB2_OPTIONS} ${DBNAME} default "create table $tbl { $(cat t1.csc2) }" || failexit "create table failed"
+
+# scdelay sets per-record sleep in ms during SC conversion.
+# With SC_FORCE_DELAY=1 in lrl.options, each record sleeps this many ms.
+$CDB2SQL_EXE ${CDB2_OPTIONS} ${DBNAME} default "exec procedure sys.cmd.send('scdelay 100')"
+
+# Insert records with long vutf8 values (stored as blobs)
+insert_records $nrecs
+
+# Start alter in background (v[32] -> v[256]), then run updates.
+# The alter changes inline size, forcing blob-to-inline conversion
+# which needs the blob data fetched from disk.
+$CDB2SQL_EXE ${CDB2_OPTIONS} ${DBNAME} default "alter table $tbl { $(cat t1_alt.csc2) }" &
+scpid=$!
+sleep 2
+update_nonblob_fields $nrecs
+wait $scpid
+if [[ $? -ne 0 ]]; then
+    failexit "alter failed"
+fi
+
+do_verify $tbl
+assertcnt $tbl $nrecs
+
+# Verify vutf8 data integrity after alter
+count=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} ${DBNAME} default \
+    "select count(*) from $tbl where v like 'This_is_a_long_vutf8_string%'")
+assertres $count $nrecs "vutf8 values should be intact after alter"
+
+echo "Success"

@@ -1,0 +1,11 @@
+schema
+{
+    int      a
+    int      b
+    vutf8    v[32]
+}
+
+keys
+{
+    "A" = a
+}

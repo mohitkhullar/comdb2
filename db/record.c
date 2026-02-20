@@ -2148,7 +2148,7 @@ int upd_new_record(struct ireq *iq, void *trans, unsigned long long oldgenid,
                                     MAXBLOBS, 1);
 
         if (rc == -1) {
-            logmsg(LOGMSG_ERROR, 
+            logmsg(LOGMSG_ERROR,
                     "upd_new_record: newgenid 0x%llx conversion error\n",
                     newgenid);
             if (iq->debug)
