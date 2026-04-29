@@ -1305,6 +1305,7 @@ static int cdb2_do_tcpconnect(cdb2_hndl_tp *hndl, struct in_addr in, int port, i
         fprintf(stderr, "tcpconnect_to: can't create TCP socket\n");
         return -1;
     }
+    fcntl(sockfd, F_SETFD, FD_CLOEXEC);
 #if 0
  	/* Allow connect port to be re-used */
  	sendbuff = 1;		/* enable option */
@@ -2522,6 +2523,7 @@ static int open_sockpool_ll(void)
         fprintf(stderr, "%s:socket: %d %s\n", __func__, errno, strerror(errno));
         return -1;
     }
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
 
     bzero(&addr, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -3153,6 +3155,8 @@ static int cdb2_socket_pool_get_ll(cdb2_hndl_tp *hndl, const char *typestr, int 
                  * us a file descriptor. */
                 errno = 0;
                 rc = recv_fd(hndl, sockpool_fd, &msg, sizeof(msg), &fd);
+                if (rc == PASSFD_SUCCESS && fd != -1)
+                    fcntl(fd, F_SETFD, FD_CLOEXEC);
                 if (rc != PASSFD_SUCCESS) {
                     fprintf(stderr, "%s: recv_fd rc %d errno %d %s\n", __func__, rc, errno, strerror(errno));
                     pthread_mutex_lock(&cdb2_sockpool_mutex);

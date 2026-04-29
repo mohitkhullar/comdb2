@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+bash -n "$0" || exit 1
+
+set -e
+source ${TESTSROOTDIR}/tools/runit_common.sh
+
+dbnm=$1
+
+if [ "x$dbnm" == "x" ] ; then
+    failexit "need a DB name"
+fi
+
+if [[ -z "$CLUSTER" ]]; then
+    echo 'comdb2_config:default_type=local' > $CDB2_CONFIG
+fi
+
+echo '
+comdb2_config:allow_pmux_route=false
+' >> $CDB2_CONFIG
+
+${TESTSBUILDDIR}/cdb2api_cloexec $dbnm default
+
+rc=$?
+if [ $rc -ne 0 ] ; then
+    failexit "cdb2api_cloexec test failed rc=$rc"
+fi
+
+echo "Passed"
