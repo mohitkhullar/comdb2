@@ -238,6 +238,8 @@ int64_t gbl_num_auth_allowed = 0;
 int64_t gbl_num_auth_denied = 0;
 int gbl_allow_old_authn = 1;
 int gbl_uses_externalauth = 0;
+int gbl_vtab_externalauth = 1;
+int gbl_vtab_externalauth_strict = 0;
 #ifdef COMDB2_TEST
 int gbl_uses_simpleauth = 0;
 #endif
@@ -245,6 +247,7 @@ int gbl_uses_externalauth_connect = 0;
 int gbl_externalauth_warn = 0;
 int gbl_consumer_auth_warnonly = 1;
 int gbl_admin_bypass_externalauth = 0;
+int gbl_passwords_with_externalauth = 0;
 int gbl_identity_cache_max = 500;
 int gbl_authorization_cache_max = 2000;
 int gbl_authentication_cache_ageout = 900;

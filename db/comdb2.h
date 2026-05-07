@@ -1650,6 +1650,8 @@ extern int gbl_allow_old_authn;
 extern int gbl_uses_password;
 extern int gbl_unauth_tag_access;
 extern int gbl_uses_externalauth;
+extern int gbl_vtab_externalauth;
+extern int gbl_vtab_externalauth_strict;
 #ifdef COMDB2_TEST
 extern int gbl_uses_simpleauth;
 #endif
@@ -1657,6 +1659,7 @@ extern int gbl_uses_externalauth_connect;
 extern int gbl_externalauth_warn;
 extern int gbl_consumer_auth_warnonly;
 extern int gbl_admin_bypass_externalauth;
+extern int gbl_passwords_with_externalauth;
 extern int gbl_identity_cache_max;
 extern int gbl_authorization_cache_max;
 extern int gbl_authentication_cache_ageout;
