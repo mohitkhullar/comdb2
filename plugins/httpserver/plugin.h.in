@@ -1,0 +1,24 @@
+struct comdb2_plugin @PLUGIN_SYM@[] = {
+    {
+        "httpserver_get",          /* Plugin identifier */
+        "HTTP GET handler plugin", /* Plugin description */
+        COMDB2_PLUGIN_APPSOCK,     /* Plugin type */
+        1,                         /* Plugin version */
+        1,                         /* Plugin interface version */
+        0,                         /* Plugin flags */
+        httpserver_init,           /* Initialization function */
+        httpserver_destroy,        /* Destroy function */
+        &httpserver_get_plugin     /* Plugin-specific data */
+    },
+    {
+        "httpserver_post",          /* Plugin identifier */
+        "HTTP POST handler plugin", /* Plugin description */
+        COMDB2_PLUGIN_APPSOCK,      /* Plugin type */
+        1,                          /* Plugin version */
+        1,                          /* Plugin interface version */
+        0,                          /* Plugin flags */
+        NULL,                       /* Initialization function */
+        NULL,                       /* Destroy function */
+        &httpserver_post_plugin     /* Plugin-specific data */
+    },
+    {0, 0, 0, 0, 0, 0, 0, 0, 0}};
