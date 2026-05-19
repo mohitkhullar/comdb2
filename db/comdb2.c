@@ -161,6 +161,7 @@ int gbl_llmeta_open = 0;
 int gbl_sqlite_sortermult = 1;
 
 int gbl_sqlite_sorter_mem = 300 * 1024 * 1024; /* 300 meg */
+int gbl_gpu_sort_threshold = 100000;
 
 int gbl_strict_dbl_quotes = 0;
 int gbl_rep_node_pri = 0;

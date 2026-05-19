@@ -246,6 +246,15 @@ include_directories(
 
 add_dependencies(sqlite mem proto bdb)
 target_link_libraries(sqlite PRIVATE cdb2archive)
+
+option(COMDB2_WITH_METAL_SORT "Enable Metal GPU sort acceleration (macOS only)" OFF)
+if(COMDB2_WITH_METAL_SORT AND APPLE)
+  enable_language(OBJC)
+  target_sources(sqlite PRIVATE src/vdbesort_metal.m)
+  target_compile_definitions(sqlite PRIVATE COMDB2_WITH_METAL_SORT)
+  set_source_files_properties(src/vdbesort_metal.m PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(sqlite PRIVATE "-framework Metal" "-framework Foundation")
+endif()
 if (COMDB2_BBCMAKE)
   comdb2_lib_target(sqlite)
 endif()

@@ -1436,9 +1436,86 @@ static SorterCompare vdbeSorterGetCompare(VdbeSorter *p){
   return vdbeSorterCompare;
 }
 
+#if defined(__APPLE__) && defined(COMDB2_WITH_METAL_SORT)
+#include "vdbesort_metal.h"
+extern int gbl_gpu_sort_threshold;
+
+static i64 vdbeSorterExtractInt64(const void *pRec){
+  const u8 *p = (const u8*)pRec;
+  int s = p[1];
+  const u8 *v = &p[p[0]];
+  static const int aLen[] = {0, 1, 2, 3, 4, 6, 8, 0, 0, 0};
+  i64 val = 0;
+  if( s>=1 && s<=6 ){
+    int n = aLen[s];
+    val = (v[0] & 0x80) ? -1 : 0;
+    for(int i=0; i<n; i++){
+      val = (val << 8) | v[i];
+    }
+  }else if( s==8 ){
+    val = 0;
+  }else if( s==9 ){
+    val = 1;
+  }
+  return val;
+}
+
+static int vdbeSorterGpuSort(SortSubtask *pTask, SorterList *pList){
+  VdbeSorter *pSorter = pTask->pSorter;
+  int nRecord = pSorter->nwrite;
+  int bDesc = pSorter->pKeyInfo->aSortOrder[0];
+  int64_t *aKeys = NULL;
+  uint32_t *aIndices = NULL;
+  SorterRecord **aRecords = NULL;
+  SorterRecord *p;
+  int i, rc = SQLITE_ERROR;
+
+  aKeys = (int64_t*)sqlite3_malloc64((i64)nRecord * sizeof(int64_t));
+  aIndices = (uint32_t*)sqlite3_malloc64((i64)nRecord * sizeof(uint32_t));
+  aRecords = (SorterRecord**)sqlite3_malloc64((i64)nRecord * sizeof(SorterRecord*));
+  if( !aKeys || !aIndices || !aRecords ) goto gpu_done;
+
+  p = pList->pList;
+  for(i=0; i<nRecord && p; i++){
+    SorterRecord *pNext;
+    if( pList->aMemory ){
+      if( (u8*)p==pList->aMemory ){
+        pNext = 0;
+      }else{
+        pNext = (SorterRecord*)&pList->aMemory[p->u.iNext];
+      }
+      p->u.pNext = pNext;
+    }else{
+      pNext = p->u.pNext;
+    }
+    aRecords[i] = p;
+    aKeys[i] = vdbeSorterExtractInt64(SRVAL(p));
+    p = pNext;
+  }
+  if( i!=nRecord ) goto gpu_done;
+
+  if( vdbeSorterMetalSort(aKeys, aIndices, (uint32_t)nRecord, bDesc)!=0 ){
+    goto gpu_done;
+  }
+
+  for(i=0; i<nRecord-1; i++){
+    aRecords[aIndices[i]]->u.pNext = aRecords[aIndices[i+1]];
+  }
+  aRecords[aIndices[nRecord-1]]->u.pNext = NULL;
+  pList->pList = aRecords[aIndices[0]];
+  rc = SQLITE_OK;
+
+gpu_done:
+  sqlite3_free(aKeys);
+  sqlite3_free(aIndices);
+  sqlite3_free(aRecords);
+  return rc;
+}
+#endif /* __APPLE__ && COMDB2_WITH_METAL_SORT */
+
 /*
-** Sort the linked list of records headed at pTask->pList. Return 
-** SQLITE_OK if successful, or an SQLite error code (i.e. SQLITE_NOMEM) if 
+** Sort the linked list of records headed at pTask->pList. Return
+** SQLITE_OK if successful, or an SQLite error code (i.e. SQLITE_NOMEM) if
 ** an error occurs.
 */
 static int vdbeSorterSort(SortSubtask *pTask, SorterList *pList){
@@ -1452,6 +1529,19 @@ static int vdbeSorterSort(SortSubtask *pTask, SorterList *pList){
 
   p = pList->pList;
   pTask->xCompare = vdbeSorterGetCompare(pTask->pSorter);
+
+#if defined(__APPLE__) && defined(COMDB2_WITH_METAL_SORT)
+  if( pTask->pSorter->typeMask==SORTER_TYPE_INTEGER
+   && pTask->pSorter->bUsePMA==0
+   && pTask->pSorter->pKeyInfo->nKeyField==1
+   && pTask->pSorter->nwrite>=gbl_gpu_sort_threshold
+   && vdbeSorterMetalInit()==0
+  ){
+    if( vdbeSorterGpuSort(pTask, pList)==SQLITE_OK ){
+      return SQLITE_OK;
+    }
+  }
+#endif
 
   aSlot = (SorterRecord **)sqlite3MallocZero(64 * sizeof(SorterRecord *));
   if( !aSlot ){

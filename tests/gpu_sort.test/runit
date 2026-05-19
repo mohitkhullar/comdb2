@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+bash -n "$0" || exit 1
+source ${TESTSROOTDIR}/tools/runit_common.sh
+
+dbnm=$1
+
+cdb2sql ${CDB2_OPTIONS} $dbnm default "create table t1 { $(cat t1.csc2) }" || failexit "create table"
+
+echo "Inserting 200000 rows..."
+for i in $(seq 0 9); do
+    start=$((i * 20000 + 1))
+    end=$(((i + 1) * 20000))
+    cdb2sql ${CDB2_OPTIONS} $dbnm default "INSERT INTO t1 SELECT value, abs(cast(random() as integer)) FROM generate_series($start,$end)" || failexit "insert batch $i"
+done
+
+# Benchmark with GPU disabled (threshold very high)
+echo "=== CPU sort (GPU disabled) ==="
+cdb2sql ${CDB2_OPTIONS} $dbnm default "exec procedure sys.cmd.send('gpu_sort_threshold 999999999')"
+t1=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+cdb2sql ${CDB2_OPTIONS} $dbnm default "SELECT val FROM t1 ORDER BY val" > sort_cpu.out || failexit "select cpu"
+t2=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+echo "CPU sort rows: $(wc -l < sort_cpu.out)"
+
+# Verify sorted
+awk '(NR>1 && $1+0 < prev+0) { print "FAIL: not sorted at line " NR; exit 1 } { prev=$1 }' sort_cpu.out
+if [ $? != 0 ]; then
+    failexit "CPU ascending sort verification failed"
+fi
+
+# Benchmark with GPU enabled (threshold 0)
+echo "=== GPU sort (threshold=0) ==="
+cdb2sql ${CDB2_OPTIONS} $dbnm default "exec procedure sys.cmd.send('gpu_sort_threshold 0')"
+t3=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+cdb2sql ${CDB2_OPTIONS} $dbnm default "SELECT val FROM t1 ORDER BY val" > sort_gpu.out || failexit "select gpu"
+t4=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+echo "GPU sort rows: $(wc -l < sort_gpu.out)"
+
+# Verify sorted
+awk '(NR>1 && $1+0 < prev+0) { print "FAIL: not sorted at line " NR; exit 1 } { prev=$1 }' sort_gpu.out
+if [ $? != 0 ]; then
+    failexit "GPU ascending sort verification failed"
+fi
+
+# Verify identical output
+diff sort_cpu.out sort_gpu.out
+if [ $? != 0 ]; then
+    failexit "GPU sort output differs from CPU sort output"
+fi
+echo "=== Outputs match ==="
+
+# Test descending
+echo "=== GPU descending sort ==="
+cdb2sql ${CDB2_OPTIONS} $dbnm default "SELECT val FROM t1 ORDER BY val DESC" > sort_desc.out || failexit "select desc"
+awk '(NR>1 && $1+0 > prev+0) { print "FAIL: not sorted at line " NR; exit 1 } { prev=$1 }' sort_desc.out
+if [ $? != 0 ]; then
+    failexit "Descending sort verification failed"
+fi
+
+echo "Success"
