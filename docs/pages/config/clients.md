@@ -11,16 +11,18 @@ the names of their peers to form a cluster.  Applications just need to know the 
 the application tier to connect.  This flexibility requires a little bit of configuration on the application
 machine side.
 
-Applications have 3 options for discovering where databases live.  In order of increasing complexity
+Applications have several options for discovering where databases live.  In order of increasing complexity
 and improved flexibility, they are:
 
   * Pass location information as part of the cdb2_open call
   * Configure database locations on a per-database basis
+  * Use BMS (DNS-based) discovery to resolve hosts directly
   * Set up a meta database that stores that information
 
-This document covers all 3 options.  Experience of running databases at Bloomberg shows us that running
-a database containing cluster setup information for other database, and setting up a DNS entry to bootstrap
-the location of this meta-database is the most flexible and resilient option.
+This document covers all of these options.  BMS discovery provides a lightweight DNS-based alternative that
+avoids querying a meta database.  For environments without BMS, running a database containing cluster setup
+information for other databases, and setting up a DNS entry to bootstrap the location of this meta-database
+is the most flexible and resilient option.
 
 ## Passing location information
 
@@ -66,8 +68,10 @@ current application tier (eg: beta, production).  Using `"default"` for `type` i
 in the list for cluster information and learn what the rest of the machines are, so a partial list will work.
 This comes in handy if a database ever needs to move.
 
-In addition to database information, the config file can also contain settings that control how the API behaves. 
-Each line containing a setting starts with `comdb2_config`.  The settings are detailed below.
+In addition to database information, the config file can also contain settings that control how the API behaves.
+Each line containing a setting starts with `comdb2_config` or `comdb2_feature`.  The `comdb2_config` prefix is
+used for general configuration settings, while `comdb2_feature` is used for feature toggles.  The settings are
+detailed below.
 
 ### Application settings
 
@@ -128,6 +132,115 @@ For example, for this configuration file:
 
 Comdb2 API will try to find the Comdb2 configuration database (called metadb) on machines returned by resolving the
 hostname prod-metadb.dyndns.example.com.
+
+#### bmssuffix
+
+Sets the DNS suffix used for BMS host discovery.  See [BMS Discovery](#bms-discovery)
+below for details.  Can also be set via the `COMDB2_CONFIG_BMSSUFFIX` environment variable.
+
+### Feature settings
+
+The following settings use the `comdb2_feature` prefix instead of `comdb2_config`.
+
+#### use_bmsd
+
+Enables or disables BMS-based host discovery.  Accepts `on`/`off`, `yes`/`no`, `true`/`false`, or `1`/`0`.
+Default is enabled.  When enabled, `cdb2_open` will attempt to resolve database hosts via DNS before falling
+back to comdb2db.  See [BMS Discovery](#bms-discovery) below for details.  Can also be set via the
+`COMDB2_FEATURE_USE_BMSD` environment variable (expects an integer: `1` to enable, `0` to disable).
+
+Setting `use_bmsd` to a value that is not recognized as on or off (i.e. neither 1 nor 0 after parsing) will
+disable BMS discovery and also clear any configured `room_distance` mapping.
+
+    comdb2_feature: use_bmsd true
+
+#### comdb2db_fallback
+
+Controls whether the client falls back to querying comdb2db when BMS discovery fails.  Accepts `on`/`off`,
+`yes`/`no`, `true`/`false`, or `1`/`0`.  Default is enabled.  When disabled, a BMS lookup failure is treated
+as a hard error and `cdb2_open` will not attempt the comdb2db path.  Can also be set via the
+`COMDB2_FEATURE_COMDB2DB_FALLBACK` environment variable (expects an integer: `1` to enable, `0` to disable).
+
+    comdb2_feature: comdb2db_fallback true
+
+#### room_distance
+
+Configures a mapping from room numbers to distance values for proximity-aware routing in BMS SRV mode.
+The argument is a list of `room_number,distance` pairs separated by spaces or colons.  Room numbers must
+be positive integers (starting from 1).  This setting can only be configured once; subsequent `room_distance`
+lines in config files are silently ignored.  When this is configured, BMS discovery uses DNS SRV record
+lookups instead of A record lookups, and the SRV response encodes each host's room number in the port field.
+The client uses the distance mapping to sort hosts so that the nearest ones are tried first.
+
+For example:
+
+    comdb2_feature: room_distance 1,0 2,1 3,2
+
+This sets room 1 as local (distance 0), room 2 as near (distance 1), and room 3 as far (distance 2).
+Rooms not listed default to maximum distance.
+
+## BMS Discovery
+
+BMS discovery is a DNS-based mechanism for resolving database hosts directly, without querying the comdb2db
+meta database.  When enabled and configured, `cdb2_open` will attempt to locate database hosts via DNS
+before falling back to the comdb2db path.
+
+BMS discovery is enabled when all of the following conditions are met:
+
+  * `use_bmsd` is `true` (default)
+  * `bmssuffix` is set to a non-empty string
+  * The database is not a sharded partition (shards cannot be discovered via BMS)
+
+### Lookup modes
+
+There are two BMS lookup modes, selected automatically based on whether `room_distance` is configured:
+
+#### SRV record lookup (with room_distance)
+
+When `room_distance` is configured, the client issues a DNS SRV query for:
+
+    <dbname>.comdb2.<tier>.<bmssuffix>
+
+The SRV response encodes room information in the port field of each record.  The client maps the room number
+to a distance using the `room_distance` table and sorts hosts so that the nearest nodes appear first.
+
+#### A record lookup (without room_distance)
+
+When `room_distance` is not configured, the client resolves hosts via DNS A records.  If `room` is configured,
+two lookups are performed:
+
+  1. `<room>.<dbname>.comdb2.<tier>.<bmssuffix>` — same-room hosts
+  2. `<dbname>.comdb2.<tier>.<bmssuffix>` — all hosts
+
+Hosts from the room-specific query are placed first in the host list to provide room affinity.
+
+### Fallback behavior
+
+If BMS discovery fails and `comdb2db_fallback` is `true` (the default), the client disables BMS and
+retries using the traditional comdb2db query path.  If `comdb2db_fallback` is `false`, the client
+retries BMS discovery until the retry limit is exhausted, then returns the failure to the caller
+without attempting the comdb2db path.
+
+### Environment variables
+
+The following environment variables can override config file settings.  Environment variable values take
+precedence over config file values.
+
+| Environment Variable | Config Equivalent | Type | Description |
+|---|---|---|---|
+| `COMDB2_FEATURE_USE_BMSD` | `use_bmsd` | `0` or `1` | Enable/disable BMS discovery |
+| `COMDB2_CONFIG_BMSSUFFIX` | `bmssuffix` | string | DNS suffix for BMS queries |
+| `COMDB2_FEATURE_COMDB2DB_FALLBACK` | `comdb2db_fallback` | `0` or `1` | Allow comdb2db fallback on BMS failure |
+
+### Example configuration
+
+    comdb2_config: bmssuffix bmssuffix.com
+    comdb2_feature: use_bmsd true
+    comdb2_feature: comdb2db_fallback true
+    comdb2_feature: room_distance 1,0 2,1 3,2
+
+With this configuration, connecting to database `mydb` on tier `prod` will first attempt a DNS SRV lookup
+for `mydb.comdb2.prod.bmssuffix.com`.  If that fails, it will fall back to comdb2db.
 
 ## comdb2db
 
