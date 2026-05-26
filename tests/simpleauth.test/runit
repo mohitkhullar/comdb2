@@ -248,8 +248,115 @@ else
 fi
 
 #---------------------------------------------------------------
+echo "Test: allow_old_authn with parallel SQL (dohsql)"
+#---------------------------------------------------------------
+# This tests that auth reuse on the same connection works correctly
+# with parallel SQL (UNION ALL triggers dohsql sharding).
+
+run_expect_success "$OP" "create table if not exists t_par1(i int)" \
+    "create t_par1"
+run_expect_success "$OP" "create table if not exists t_par2(i int)" \
+    "create t_par2"
+run_expect_success "$OP" "create table if not exists t_par3(i int)" \
+    "create t_par3"
+run_expect_success "$OP" "insert into t_par1 values(1),(2),(3)" \
+    "populate t_par1"
+run_expect_success "$OP" "insert into t_par2 values(4),(5),(6)" \
+    "populate t_par2"
+run_expect_success "$OP" "insert into t_par3 values(7),(8),(9)" \
+    "populate t_par3"
+
+# Run parallel SQL (UNION ALL) with wildcard access — exercises dohsql + auth reuse
+run_expect_success "$MOHIT" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3" \
+    "mohit parallel SQL with wildcard"
+
+# Run multiple queries on same connection — exercises allow_old_authn auth reuse
+run_multi_expect_success() {
+    local principal="$1"
+    local desc="$2"
+    shift 2
+    if $SA "$principal" "$@" > /dev/null 2>&1; then
+        echo "  PASS: $desc"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL: $desc"
+        failed=$((failed + 1))
+    fi
+}
+
+run_multi_expect_success "$MOHIT" \
+    "mohit multi-query auth reuse with parallel SQL" \
+    "select i from t_par1" \
+    "select i from t_par2" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3"
+
+# Run queries inside a transaction — triggers oldAuthnResult caching
+run_multi_expect_success "$MOHIT" \
+    "mohit transaction auth reuse with parallel SQL" \
+    "begin" \
+    "select i from t_par1" \
+    "select i from t_par2" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3" \
+    "commit"
+
+# Same test under restricted access
+run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, verb, resourcetype, resourcename) values('*', 'op', '*', 'Write', 'table', 'comdb2_simple_auth') on conflict do nothing" \
+    "grant op write on auth table"
+run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, verb, resourcetype, resourcename) values('*', 'op', '*', 'Read', 'table', 'comdb2_simple_auth') on conflict do nothing" \
+    "grant op read on auth table"
+run_expect_success "$OP" "delete from comdb2_simple_auth where cluster='*' and user='*' and bpkg='*' and verb='*' and resourcetype='*' and resourcename='*'" \
+    "remove wildcard rule"
+
+# Grant mohit Read on all three tables
+run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, verb, resourcetype, resourcename) values('*', 'mohit', '*', 'Read', 'table', 't_par1') on conflict do nothing" \
+    "grant mohit Read on t_par1"
+run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, verb, resourcetype, resourcename) values('*', 'mohit', '*', 'Read', 'table', 't_par2') on conflict do nothing" \
+    "grant mohit Read on t_par2"
+run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, verb, resourcetype, resourcename) values('*', 'mohit', '*', 'Read', 'table', 't_par3') on conflict do nothing" \
+    "grant mohit Read on t_par3"
+
+# Parallel SQL under restricted access — exercises dohsql + auth reuse + access checks
+run_expect_success "$MOHIT" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3" \
+    "mohit parallel SQL with restricted access"
+
+# Multi-query auth reuse under restricted access
+run_multi_expect_success "$MOHIT" \
+    "mohit multi-query auth reuse with restricted access" \
+    "select i from t_par1" \
+    "select i from t_par2" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3"
+
+# Transaction auth reuse under restricted access
+run_multi_expect_success "$MOHIT" \
+    "mohit transaction auth reuse with restricted access" \
+    "begin" \
+    "select i from t_par1" \
+    "select i from t_par2" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3" \
+    "commit"
+
+# mike has no access — parallel SQL should fail
+run_expect_failure "$MIKE" \
+    "select i from t_par1 union all select i from t_par2 union all select i from t_par3" \
+    "mike parallel SQL denied (no matching rule)"
+
+# Restore
+run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, verb, resourcetype, resourcename) values('*', '*', '*', '*', '*', '*') on conflict do nothing" \
+    "restore wildcard rule"
+run_expect_success "$OP" "delete from comdb2_simple_auth where user = 'op' or user = 'mohit'" \
+    "clean up user-specific rules"
+
+#---------------------------------------------------------------
 echo "Test: cleanup"
 #---------------------------------------------------------------
+run_expect_success "$OP" "drop table if exists t_par1" \
+    "drop t_par1"
+run_expect_success "$OP" "drop table if exists t_par2" \
+    "drop t_par2"
+run_expect_success "$OP" "drop table if exists t_par3" \
+    "drop t_par3"
 run_expect_success "$OP" "drop table if exists t1" \
     "drop test table"
 

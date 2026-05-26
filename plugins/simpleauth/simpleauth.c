@@ -19,20 +19,46 @@ int cdb2_in_client_trans();
 
 int simpleAuthCheck(const char *principal, const char *verb, const char *resource);
 
+typedef struct simpleAuthnResultT {
+    char *principal;
+    int rc;
+} simpleAuthnResult;
+
 typedef struct authenticationDataT {
     const char *principal;
     int major_version;
     int minor_version;
+    simpleAuthnResult *oldAuthnResult;
     int dta_size;
     void *dta;
     CDB2SQLQUERY__IdentityBlob *id;
 } authenticationData;
+
+static void setOldAuthnResult(authenticationData *authData, const char *principal, int rc)
+{
+    if (gbl_allow_old_authn && cdb2_in_client_trans()) {
+        if (!authData->oldAuthnResult) {
+            authData->oldAuthnResult = (simpleAuthnResult *)malloc(sizeof(simpleAuthnResult));
+            if (!authData->oldAuthnResult)
+                return;
+            authData->oldAuthnResult->principal = NULL;
+        }
+        free(authData->oldAuthnResult->principal);
+        authData->oldAuthnResult->principal = strdup(principal);
+        authData->oldAuthnResult->rc = rc;
+    } else if (authData->oldAuthnResult) {
+        free(authData->oldAuthnResult->principal);
+        free(authData->oldAuthnResult);
+        authData->oldAuthnResult = NULL;
+    }
+}
 
 static int simpleCheckTableAccess(void *ID, const char *tablename, const char *argv0, const char *action)
 {
     char resource[512];
     int off;
     const char *principal;
+    int rc;
 
     /* No identity blob sent - check if anonymous access is allowed */
     if (!ID) {
@@ -40,6 +66,11 @@ static int simpleCheckTableAccess(void *ID, const char *tablename, const char *a
     } else {
         authenticationData *authData = (authenticationData *)ID;
         principal = authData->principal;
+
+        if (gbl_allow_old_authn && authData->oldAuthnResult && cdb2_in_client_trans()) {
+            logmsg(LOGMSG_USER, "simpleauth: reusing old authn for principal='%s' action='%s'\n", principal, action);
+            return authData->oldAuthnResult->rc;
+        }
     }
 
     off = snprintf(resource, sizeof(resource), "bri:comdb2:database:%s", gbl_dbname);
@@ -57,7 +88,13 @@ static int simpleCheckTableAccess(void *ID, const char *tablename, const char *a
 
     logmsg(LOGMSG_USER, "simpleauth: principal='%s' client_info='%s' action='%s'\n", principal,
            argv0 ? argv0 : "(null)", action);
-    return simpleAuthCheck(principal, action, resource);
+    rc = simpleAuthCheck(principal, action, resource);
+
+    if (ID) {
+        setOldAuthnResult((authenticationData *)ID, principal, rc);
+    }
+
+    return rc;
 }
 
 static int simpleCheckOPAccess(void *ID)
@@ -91,10 +128,16 @@ static void *simpleNewsqlAuthData(void *buf, CDB2SQLQUERY__IdentityBlob *id)
         authenticationData *authData = NULL;
         if (buf) {
             authData = (authenticationData *)buf;
+            if (authData->oldAuthnResult && !cdb2_in_client_trans()) {
+                free(authData->oldAuthnResult->principal);
+                free(authData->oldAuthnResult);
+                authData->oldAuthnResult = NULL;
+            }
         } else {
             authData = (authenticationData *)malloc(sizeof(authenticationData));
             if (!authData)
                 return NULL;
+            authData->oldAuthnResult = NULL;
         }
         authData->principal = id->principal;
         authData->major_version = id->majorversion;
@@ -110,6 +153,11 @@ static void *simpleNewsqlAuthData(void *buf, CDB2SQLQUERY__IdentityBlob *id)
 static void simpleFreeNewsqlAuthData(void *buf)
 {
     if (buf) {
+        authenticationData *authData = (authenticationData *)buf;
+        if (authData->oldAuthnResult) {
+            free(authData->oldAuthnResult->principal);
+            free(authData->oldAuthnResult);
+        }
         free(buf);
     }
 }
