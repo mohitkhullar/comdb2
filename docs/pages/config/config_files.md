@@ -773,6 +773,7 @@ These options are toggle-able at runtime.
 |ack_trace | not set | Every second, produce trace for ack messages
 |allow | |  See [permissioning commands](#allowdisallow-commands)
 |allow_lua_print | 0 | Enable to allow stored procedures to print trace on DB's stdout
+|allow_old_authn | 0 | Reuse old successful authentication for the connection
 |allow_user_schema | 0 | Enable to allow per-user schemas
 |analyze_comp_threads | 10 | Number of thread to use when generating samples for computing index statistics
 |analyze_comp_threshold | 104857600 | Index file size above which we'll do sampling, rather than scan the entire index.

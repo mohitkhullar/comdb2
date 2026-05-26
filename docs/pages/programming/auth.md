@@ -136,6 +136,22 @@ testdb> select * from comdb2_tablepermissions
 [select * from comdb2_tablepermissions] rc 0
 ```
 
+## Connection authentication caching
+
+By default, connections may perform authentication validation at various points during a transaction's lifetime. The `allow_old_authn` LRL tunable can be enabled to reuse a successful authentication from the start of a connection, avoiding re-authentication checks that might fail later during a long-running transaction.
+
+This tunable is useful for long-running transactions where:
+- Authentication credentials (e.g., external auth tokens) might expire during transaction execution
+- Re-authentication checks during the transaction could fail even though the initial authentication succeeded
+- You want to prevent long transactions from being aborted due to mid-transaction authentication failures
+
+To enable connection authentication caching:
+```
+allow_old_authn
+```
+
+When enabled, once a connection is authenticated, subsequent authentication checks within that connection will reuse the initial successful authentication result rather than re-validating, preventing transaction failures due to credential expiration during long operations.
+
 ## User Schemas
 Comdb2 supports tables in user's namespace. This allows multiple users to have tables with same name.
 
