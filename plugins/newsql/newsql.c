@@ -418,7 +418,8 @@ static int get_col_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int col,
         }
     } else if (stmt) {
         type = get_sqlite3_column_type(clnt, stmt, col, 0);
-        if ((check_protocol_version && appdata->protocol_version == NEWSQL_PROTOCOL_COMPAT /* fastsql */) ||
+        if ((check_protocol_version && appdata->protocol_version == NEWSQL_PROTOCOL_COMPAT /* fastsql */ &&
+             gbl_surprise) ||
             type == SQLITE_NULL) {
             type = typestr_to_type(sqlite3_column_decltype(stmt, col));
         }
