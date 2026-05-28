@@ -289,12 +289,15 @@ static enum comdb2_import_op bulk_import_write_import_db_lrl(char *tmp_db_dir, c
             gbl_dtastripe,
             gbl_blobstripe ? "blobstripe" : "noblobstripe");
 
-    extern int gbl_uses_simpleauth;
     extern int gbl_uses_externalauth;
 
+#ifdef COMDB2_TEST
+    extern int gbl_uses_simpleauth;
     if (gbl_uses_simpleauth) {
         fprintf(fp, "\nsimpleauth\n");
-    } else if (gbl_uses_externalauth) {
+    } else
+#endif
+        if (gbl_uses_externalauth) {
         fprintf(fp, "\nexternalauth 1\n");
     } else {
         fprintf(fp, "\n");
