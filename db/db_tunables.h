@@ -2659,7 +2659,9 @@ REGISTER_TUNABLE("prefer_non_blocking_coherency_check",
 REGISTER_TUNABLE("new_connection_grace_ms", "Time (in ms) before new connection is eligible for eviction (Default: 100ms)",
                  TUNABLE_INTEGER, &gbl_new_connection_grace_ms, INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("accept_headroom", "", TUNABLE_INTEGER, &gbl_accept_headroom, INTERNAL, NULL, NULL, NULL, NULL);
+#ifdef COMDB2_TEST
 REGISTER_TUNABLE("simpleauth", NULL, TUNABLE_BOOLEAN, &gbl_uses_simpleauth, NOARG | READEARLY, NULL, NULL, NULL, NULL);
+#endif
 REGISTER_TUNABLE("track_db_open", "Track berkdb open DB handles", TUNABLE_INTEGER, &gbl_db_track_open, INTERNAL, NULL,
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("clear_ufid_on_db_close", "Clear ufid hash on db->close", TUNABLE_INTEGER, &gbl_clear_ufid_on_db_close,
