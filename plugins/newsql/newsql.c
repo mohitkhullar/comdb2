@@ -1209,8 +1209,8 @@ static int newsql_sp_cmd(struct sqlclntstate *clnt, void *cmd, size_t sz)
     if (ntohl(hdr.type) != CDB2_REQUEST_TYPE__CDB2QUERY) {
         return -2;
     }
-    int len = ntohl(hdr.length);
-    if (len > sz) {
+    uint32_t len = ntohl(hdr.length);
+    if (len == 0 || len > sz) {
         return -3;
     }
     uint8_t buf[len];
