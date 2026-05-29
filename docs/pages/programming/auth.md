@@ -136,21 +136,23 @@ testdb> select * from comdb2_tablepermissions
 [select * from comdb2_tablepermissions] rc 0
 ```
 
-## Connection authentication caching
+## Transaction authentication caching
 
-By default, connections may perform authentication validation at various points during a transaction's lifetime. The `allow_old_authn` LRL tunable can be enabled to reuse a successful authentication from the start of a connection, avoiding re-authentication checks that might fail later during a long-running transaction.
+Each SQL statement normally triggers a fresh IAM authentication check. The `allow_old_authn` tunable caches a successful authentication result for the duration of the current transaction, so subsequent statements reuse it instead of re-authenticating.
 
-This tunable is useful for long-running transactions where:
-- Authentication credentials (e.g., external auth tokens) might expire during transaction execution
-- Re-authentication checks during the transaction could fail even though the initial authentication succeeded
-- You want to prevent long transactions from being aborted due to mid-transaction authentication failures
+This is useful when:
+- External auth tokens might expire mid-transaction
+- The IAM service may return transient errors that would abort in-flight transactions
+- Transactions contain many statements and you want to reduce authentication overhead
 
-To enable connection authentication caching:
+To enable:
 ```
 allow_old_authn
 ```
 
-When enabled, once a connection is authenticated, subsequent authentication checks within that connection will reuse the initial successful authentication result rather than re-validating, preventing transaction failures due to credential expiration during long operations.
+The cached result is **transaction-scoped** — it is freed when the transaction commits or rolls back. This tunable only applies to external (IAM) auth; simpleauth does not use it.
+
+Note: credential revocations will not take effect until the current transaction completes.
 
 ## User Schemas
 Comdb2 supports tables in user's namespace. This allows multiple users to have tables with same name.

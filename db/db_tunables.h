@@ -2416,7 +2416,7 @@ REGISTER_TUNABLE("merge_table_enabled",
                  TUNABLE_BOOLEAN, &gbl_merge_table_enabled, 0, NULL, NULL,
                  NULL, NULL);
 
-REGISTER_TUNABLE("allow_old_authn", "Reuse old successful authentication for the connection",
+REGISTER_TUNABLE("allow_old_authn", "Cache successful IAM authentication for the duration of a transaction",
                  TUNABLE_BOOLEAN, &gbl_allow_old_authn, NOARG | READEARLY,
                  NULL, NULL, NULL, NULL);
 
