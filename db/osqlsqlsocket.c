@@ -301,6 +301,12 @@ int osqlcomm_req_socket(COMDB2BUF *sb, char **sql, char tzname[DB_MAX_TZNAMEDB],
     GDATA(sqlqlen);
     sqlqlen = htonl(sqlqlen);
 
+    if (sqlqlen < 0 || sqlqlen > MAXQUERYLEN) {
+        logmsg(LOGMSG_ERROR, "%s: sqlqlen %d exceeds maximum %d\n", __func__, sqlqlen, MAXQUERYLEN);
+        rc = -1;
+        goto done;
+    }
+
     *sql = malloc(sqlqlen + 1);
     if (!*sql) {
         rc = ENOMEM;
@@ -334,6 +340,12 @@ int osqlcomm_bplog_socket(COMDB2BUF *sb, osql_sess_t *sess)
     while (!is_msg_done) {
         GDATA(buflen);
         buflen = htonl(buflen);
+
+        if (buflen < 0 || buflen > MAXQUERYLEN) {
+            logmsg(LOGMSG_ERROR, "%s: buflen %d exceeds maximum %d\n", __func__, buflen, MAXQUERYLEN);
+            rc = -1;
+            goto done;
+        }
 
         if (gbl_sockbplog_debug)
             logmsg(LOGMSG_ERROR, "%p Received a packet of length %d\n",
