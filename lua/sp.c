@@ -5499,6 +5499,7 @@ static int cson_push_value_annotated(Lua L, cson_value *val)
         if (!cson_value_is_string(v)) return -1;
         const char *s = cson_value_get_cstr(v);
         size_t l = strlen(s);
+        if (l % 2 != 0) return -1;
         uint8_t *b = malloc(l / 2);
         luabb_fromhex(b, (uint8_t *)s, l);
         blob_t x = {.data = b, .length = l / 2};
