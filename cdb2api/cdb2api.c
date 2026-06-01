@@ -172,7 +172,7 @@ static int cdb2_protobuf_heuristic = 0;
 static int cdb2_protobuf_heuristic = 1;
 #endif
 static int cdb2_protobuf_heuristic_set_from_env = 0;
-static int cdb2_non_threaded_identity = 0;
+static int cdb2_non_threaded_identity = 1;
 static int cdb2_non_threaded_identity_from_env = 0;
 
 static int CDB2_REQUEST_FP = 0;
