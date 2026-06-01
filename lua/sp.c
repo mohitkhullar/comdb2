@@ -82,6 +82,7 @@ extern int gbl_return_long_column_names;
 extern int gbl_max_sqlcache;
 extern int gbl_lua_new_trans_model;
 extern int gbl_max_lua_instructions;
+extern int gbl_max_lua_source_len;
 extern int gbl_lua_version;
 extern int gbl_notimeouts;
 extern int gbl_allow_lua_print;
@@ -4751,13 +4752,27 @@ static int db_sp(Lua L)
         return 1;
     }
     size_t size = strlen(src);
-    char buf[size + 32];
+    if (gbl_max_lua_source_len > 0 && size > gbl_max_lua_source_len) {
+        free(src);
+        return luaL_error(L,
+                          "stored procedure '%s' source too large "
+                          "(%zu bytes, max %d)",
+                          name, size, gbl_max_lua_source_len);
+    }
+    char *buf = malloc(size + 32);
+    if (buf == NULL) {
+        free(src);
+        return luaL_error(L,
+                          "out of memory loading stored procedure '%s'",
+                          name);
+    }
     sprintf(buf, "%s\nreturn main", src);
     free(src);
     if (luaL_dostring(L, buf) != 0) {
         luabb_error(L, getsp(L), lua_tostring(L, -1));
         lua_pushnil(L);
     }
+    free(buf);
     return 1;
 }
 
@@ -6446,6 +6461,13 @@ static int setup_sp_int(char *spname, struct sqlthdstate *thd, struct sqlclntsta
         if (locked)
             unlock_schema_lk();
         if (sp->src == NULL) {
+            close_sp(clnt);
+            return -1;
+        }
+        if (gbl_max_lua_source_len > 0 &&
+            strlen(sp->src) > gbl_max_lua_source_len) {
+            *err = strdup(
+                "stored procedure source exceeds max_lua_source_len");
             close_sp(clnt);
             return -1;
         }

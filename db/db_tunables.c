@@ -133,6 +133,7 @@ extern int gbl_master_swing_osql_verbose;
 extern int gbl_master_swing_sock_restart_sleep;
 extern int gbl_max_key_size_new;
 extern int gbl_max_lua_instructions;
+extern int gbl_max_lua_source_len;
 extern int gbl_max_sqlcache;
 extern int __gbl_max_mpalloc_sleeptime;
 extern int gbl_mem_nice;

@@ -416,6 +416,7 @@ char *gbl_spfile_name = NULL;
 char *gbl_user_vers_spfile_name = NULL;
 char *gbl_timepart_file_name = NULL;
 int gbl_max_lua_instructions = 10000;
+int gbl_max_lua_source_len = 1 * 1024 * 1024;
 int gbl_check_wrong_cmd = 1;
 int gbl_updategenids = 0;
 int gbl_chkpoint_alarm_time = 60;

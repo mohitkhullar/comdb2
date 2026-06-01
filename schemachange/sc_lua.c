@@ -13,6 +13,7 @@
 
 #include "logmsg.h"
 
+extern int gbl_max_lua_source_len;
 int gbl_fail_to_create_default_cons = 0;
 int gbl_create_default_consumer_atomically = 1;
 
@@ -329,6 +330,14 @@ static int add_versioned_sp(struct schema_change_type *sc, tran_type *tran)
     int rc, bdberr;
     char *spname = sc->tablename;
     char *version = sc->fname;
+    size_t srclen = strlen(sc->newcsc2);
+    if (gbl_max_lua_source_len > 0 && srclen > gbl_max_lua_source_len) {
+        logmsg(LOGMSG_ERROR,
+               "stored procedure '%s' source too large "
+               "(%zu bytes, max %d)\n",
+               spname, srclen, gbl_max_lua_source_len);
+        return -1;
+    }
     int default_ver_num = bdb_get_sp_get_default_version(spname, &bdberr);
     char *default_ver_str = NULL;
     bdb_get_default_versioned_sp(spname, &default_ver_str);
@@ -454,6 +463,15 @@ static int add_sp(struct schema_change_type *sc, int *version, tran_type *tran)
     COMDB2BUF *sb = sc->sb;
     char *schemabuf = sc->newcsc2;
     int rc, bdberr;
+    size_t srclen = strlen(schemabuf);
+    if (gbl_max_lua_source_len > 0 && srclen > gbl_max_lua_source_len) {
+        cdb2buf_printf(sb,
+                       "!Stored procedure source too large "
+                       "(%zu bytes, max %d).\n",
+                       srclen, gbl_max_lua_source_len);
+        cdb2buf_printf(sb, "FAILED\n");
+        return -1;
+    }
     if ((rc = bdb_set_sp_lua_source(NULL, tran, sc->tablename, schemabuf,
                                     strlen(schemabuf) + 1, 0, &bdberr)) != 0) {
         cdb2buf_printf(sb, "!Unable to add lua source. \n");
