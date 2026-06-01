@@ -1570,7 +1570,7 @@ static int db_debug(lua_State *lua)
             sprintf(sp_info, "%s:%s", sp->spname, sp->spversion.version_str);
         }
         len = strlen(sp_info);
-        if (strncasecmp(sp_info, gbl_break_spname, len) == 0) {
+        if (gbl_break_spname && strncasecmp(sp_info, gbl_break_spname, len) == 0) {
             gbl_break_lua = pthread_self();
         }
     }
@@ -2072,7 +2072,7 @@ static void InstructionCountHook(lua_State *lua, lua_Debug *debug)
                 sprintf(sp_info, "%s:%s:%d", sp->spname,
                         sp->spversion.version_str, debug->currentline);
             }
-            if (strcasecmp(sp_info, gbl_break_spname) == 0) {
+            if (gbl_break_spname && strcasecmp(sp_info, gbl_break_spname) == 0) {
                 gbl_break_lua = pthread_self();
             }
         }
