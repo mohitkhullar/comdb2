@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+bash -n "$0" || exit 1
+
+dbnm=$1
+
+long_name=$(printf 'A%.0s' $(seq 1 5000))
+
+# Should return error, not crash the server
+cdb2sql ${CDB2_OPTIONS} $dbnm default "EXEC PROCEDURE sys.cmd.send('destroy_sql_pool $long_name')" >/dev/null 2>&1
+
+# Verify server is still alive
+cdb2sql ${CDB2_OPTIONS} $dbnm default "SELECT 'alive'" >output.actual 2>&1
+
+grep -q "('alive'='alive')" output.actual
+if [ $? -ne 0 ]; then
+    echo "FAILURE: server not responding after overflow attempt"
+    cat output.actual
+    exit 1
+fi
+
+echo "SUCCESS"

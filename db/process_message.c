@@ -1382,6 +1382,10 @@ clipper_usage:
     else if (tokcmp(tok, ltok, "destroy_sql_pool") == 0) {
         char zPoolName[PATH_MAX];
         tok = segtok(line, lline, &st, &ltok);
+        if (ltok >= PATH_MAX) {
+            logmsg(LOGMSG_USER, "pool name too long. Max: %d\n", PATH_MAX - 1);
+            return -1;
+        }
         if (ltok != 0) {
             tokcpy(tok, ltok, zPoolName);
             rc = destroy_sql_pool(zPoolName, SQL_POOL_STOP_TIMEOUT_US);
