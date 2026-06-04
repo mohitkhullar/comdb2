@@ -364,7 +364,6 @@ enum {
     XRESPONSE(RESPONSE_COLUMNS_STR)                                            \
     XRESPONSE(RESPONSE_COLUMNS_FDB_PUSH)                                       \
     XRESPONSE(RESPONSE_COST)                                                   \
-    XRESPONSE(RESPONSE_DEBUG)                                                  \
     XRESPONSE(RESPONSE_EFFECTS)                                                \
     XRESPONSE(RESPONSE_ERROR)                                                  \
     XRESPONSE(RESPONSE_ERROR_ACCESS)                                           \
@@ -795,7 +794,6 @@ struct sqlclntstate {
     struct stored_proc *sp;
     int exec_lua_thread;
     int want_stored_procedure_trace;
-    int want_stored_procedure_debug;
     char spname[MAX_SPNAME + 1];
     struct spversion_t spversion;
 

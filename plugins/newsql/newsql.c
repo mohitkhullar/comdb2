@@ -584,14 +584,6 @@ int newsql_columns_fdb_push(struct sqlclntstate *clnt, cdb2_hndl_tp *hndl,
     return newsql_response(clnt, &resp, 0);
 }
 
-static int newsql_debug(struct sqlclntstate *c, char *info)
-{
-    CDB2SQLRESPONSE r = CDB2__SQLRESPONSE__INIT;
-    r.response_type = RESPONSE_TYPE__SP_DEBUG;
-    r.info_string = info;
-    return newsql_response_int(c, &r, RESPONSE_HEADER__SQL_RESPONSE_TRACE, 1);
-}
-
 static int newsql_error(struct sqlclntstate *c, char *r, int e)
 {
     CDB2SQLRESPONSE resp = CDB2__SQLRESPONSE__INIT;
@@ -1160,7 +1152,6 @@ static int newsql_write_response(struct sqlclntstate *c, int t, void *a, int i)
     case RESPONSE_COLUMNS_STR: return newsql_columns_str(c, a, i);
     case RESPONSE_COLUMNS_FDB_PUSH:
         return newsql_columns_fdb_push(c, a, i);
-    case RESPONSE_DEBUG: return newsql_debug(c, a);
     case RESPONSE_ERROR: return newsql_error(c, a, i);
     case RESPONSE_ERROR_ACCESS: return newsql_error(c, a, CDB2__ERROR_CODE__ACCESS);
     case RESPONSE_ERROR_APPSOCK_LIMIT: return newsql_error(c, a, CDB2__ERROR_CODE__APPSOCK_LIMIT);
@@ -1996,14 +1987,6 @@ int process_set_commands(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
                 sqlstr += 11;
                 sqlstr = skipws(sqlstr);
                 bdb_osql_trak(sqlstr, &clnt->bdb_osql_trak);
-            } else if (strncasecmp(sqlstr, "spdebug", 7) == 0) {
-                sqlstr += 7;
-                sqlstr = skipws(sqlstr);
-                if (strncasecmp(sqlstr, "off", 3) == 0) {
-                    clnt->want_stored_procedure_debug = 0;
-                } else {
-                    clnt->want_stored_procedure_debug = 1;
-                }
             } else if (strncasecmp(sqlstr, "HASQL", 5) == 0) {
                 sqlstr += 5;
                 sqlstr = skipws(sqlstr);
@@ -2708,8 +2691,6 @@ static const char *response_type_str(int type) {
             return "COMDB2_INFO";
         case RESPONSE_TYPE__SP_TRACE:
             return "SP_TRACE";
-        case RESPONSE_TYPE__SP_DEBUG:
-            return "SP_DEBUG";
         case RESPONSE_TYPE__SQL_ROW:
             return "SQL_ROW";
         default:
