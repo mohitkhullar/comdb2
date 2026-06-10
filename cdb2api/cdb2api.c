@@ -4703,7 +4703,12 @@ static int cdb2_send_query(cdb2_hndl_tp *hndl, cdb2_hndl_tp *event_hndl, COMDB2B
         if (cdb2_non_threaded_identity)
             flags |= CDB2_NON_THREADED_IDENTITY;
         id_blob = identity_cb->getIdentity(hndl, flags);
-        if (id_blob && id_blob->data.data) {
+        if (!id_blob) {
+            sprintf(hndl->errstr, "%s: IAM identity creation failed", __func__);
+            rc = -1;
+            goto after_callback;
+        }
+        if (id_blob->data.data) {
             sqlquery.identity = id_blob;
         }
     }
@@ -8784,20 +8789,23 @@ void cdb2_set_argv0(cdb2_hndl_tp *hndl, const char *argv0)
     hndl->argv0_override = argv0 ? strdup(argv0) : NULL;
 }
 
-void cdb2_setDbIdentityBlob(cdb2_hndl_tp *hndl)
+int cdb2_setDbIdentityBlob(cdb2_hndl_tp *hndl)
 {
     if (!iam_identity || !identity_cb)
-        return;
+        return 0;
     int flags = 0;
     if (cdb2_use_optional_identity)
         flags |= CDB2_USE_OPTIONAL_IDENTITY;
     if (cdb2_non_threaded_identity)
         flags |= CDB2_NON_THREADED_IDENTITY;
     CDB2SQLQUERY__IdentityBlob *id_blob = identity_cb->getIdentity(hndl, flags);
-    if (id_blob && id_blob->data.data) {
+    if (!id_blob)
+        return -1;
+    if (id_blob->data.data) {
         hndl->id_blob = id_blob;
         hndl->id_blob_owned = 1;
     }
+    return 0;
 }
 #endif
 
