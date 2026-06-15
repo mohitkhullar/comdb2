@@ -14,11 +14,13 @@
 package com.bloomberg.comdb2.jdbc;
 
 import java.io.*;
+import java.net.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import javax.naming.NamingException;
+import javax.naming.directory.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import java.net.*;
 
 import com.bloomberg.comdb2.jdbc.Cdb2DbInfoResponse.NodeInfo;
 import com.bloomberg.comdb2.jdbc.Cdb2Query;
@@ -34,6 +36,30 @@ import com.bloomberg.comdb2.jdbc.Cdb2Query.Cdb2SqlQuery;
 public class DatabaseDiscovery {
     private static Logger logger = LoggerFactory.getLogger(DatabaseDiscovery.class);
     static boolean debug = false;
+
+    /**
+     * Default BMS suffix loaded from cdb2jdbc.properties at class init time.
+     * Empty string means BMS is not configured (OSS builds).
+     */
+    static final String DEFAULT_BMS_SUFFIX;
+    static {
+        String suffix = "";
+        try {
+            InputStream is = DatabaseDiscovery.class.getClassLoader()
+                    .getResourceAsStream("cdb2jdbc.properties");
+            if (is != null) {
+                Properties props = new Properties();
+                props.load(is);
+                String val = props.getProperty("bmssuffix");
+                if (val != null && !val.isEmpty())
+                    suffix = val;
+                is.close();
+            }
+        } catch (IOException e) {
+            /* ignore */
+        }
+        DEFAULT_BMS_SUFFIX = suffix;
+    }
 
     /**
      * Comdb2db configuration files.
@@ -53,7 +79,7 @@ public class DatabaseDiscovery {
 
     private static final Map<String, TimeAndHosts> comdb2lcldb = new ConcurrentHashMap<>();
 
-    private static boolean value_on_off(String val) {
+    static boolean value_on_off(String val) {
         if (val == null)
             return false;
 
@@ -70,9 +96,177 @@ public class DatabaseDiscovery {
     }
 
     /**
+     * Parse room_distance config. Format in config file tokens:
+     * "comdb2_feature" "room_distance" "4:2001,3:0,2:2001,1:2001"
+     * or as space-separated pairs: "comdb2_feature" "room_distance" "0" "0" "1" "2001" ...
+     */
+    private static int[] parseRoomDistance(String[] tokens, int startIdx) {
+        if (startIdx >= tokens.length)
+            return null;
+
+        HashMap<Integer, Integer> entries = new HashMap<>();
+
+        /* Try comma-separated key:value format first (e.g. "4:2001,3:0") */
+        String first = tokens[startIdx];
+        if (first.contains(":") || first.contains(",")) {
+            String[] parts = first.split(",");
+            for (String part : parts) {
+                String[] kv = part.split(":");
+                if (kv.length == 2) {
+                    try {
+                        entries.put(Integer.parseInt(kv[0]), Integer.parseInt(kv[1]));
+                    } catch (NumberFormatException e) { /* skip */ }
+                }
+            }
+        } else {
+            /* Space-separated pairs: room_id distance room_id distance ... */
+            for (int i = startIdx; i + 1 < tokens.length; i += 2) {
+                try {
+                    entries.put(Integer.parseInt(tokens[i]), Integer.parseInt(tokens[i + 1]));
+                } catch (NumberFormatException e) { /* skip */ }
+            }
+        }
+
+        if (entries.isEmpty())
+            return null;
+
+        int maxRoom = 0;
+        for (int room : entries.keySet())
+            if (room > maxRoom)
+                maxRoom = room;
+
+        int[] result = new int[maxRoom + 1];
+        for (Map.Entry<Integer, Integer> e : entries.entrySet())
+            result[e.getKey()] = e.getValue();
+
+        return result;
+    }
+
+    /**
+     * BMS IP-based discovery using DNS A records.
+     * Phase 1: Resolve {room}.{db}.comdb2.{tier}.{suffix} for same-room hosts.
+     * Phase 2: Resolve {db}.comdb2.{tier}.{suffix} for all hosts.
+     * Returns list of hosts with same-room hosts first.
+     */
+    static List<String> bmsIpLookup(String dbName, String room,
+            String tier, String bmssuffix) {
+        List<String> hosts = new ArrayList<>();
+        int maxNodes = 32;
+
+        /* Phase 1: room-specific lookup */
+        if (room != null && !room.isEmpty()) {
+            String roomDns = String.format("%s.%s.comdb2.%s.%s",
+                    room, dbName, tier, bmssuffix);
+            try {
+                InetAddress[] addrs = InetAddress.getAllByName(roomDns);
+                for (InetAddress addr : addrs) {
+                    if (hosts.size() >= maxNodes) break;
+                    String ip = addr.getHostAddress();
+                    if (!hosts.contains(ip))
+                        hosts.add(ip);
+                }
+            } catch (UnknownHostException e) {
+                logger.debug("BMS room lookup failed for {}: {}", roomDns, e.getMessage());
+            }
+        }
+
+        int numSameRoom = hosts.size();
+
+        /* Phase 2: all-hosts lookup */
+        String allDns = String.format("%s.comdb2.%s.%s", dbName, tier, bmssuffix);
+        try {
+            InetAddress[] addrs = InetAddress.getAllByName(allDns);
+            for (InetAddress addr : addrs) {
+                if (hosts.size() >= maxNodes) break;
+                String ip = addr.getHostAddress();
+                if (!hosts.contains(ip))
+                    hosts.add(ip);
+            }
+        } catch (UnknownHostException e) {
+            logger.debug("BMS all-hosts lookup failed for {}: {}", allDns, e.getMessage());
+        }
+
+        if (!hosts.isEmpty())
+            logger.debug("bmsIpLookup {}.comdb2.{}: {} hosts ({} same-room)",
+                    dbName, tier, hosts.size(), numSameRoom);
+
+        return hosts;
+    }
+
+    /**
+     * BMS SRV-based discovery with room-distance sorting.
+     * SRV port field encodes room number; sorts by distance.
+     * Returns list of hosts with near-room hosts first.
+     */
+    static List<String> bmsSrvLookup(String dbName, String tier,
+            String bmssuffix, int[] roomDistance) {
+        String dnsName = String.format("%s.comdb2.%s.%s", dbName, tier, bmssuffix);
+
+        try {
+            DirContext ctx = new InitialDirContext();
+            Attributes attrs = ctx.getAttributes("dns:///" + dnsName,
+                    new String[]{"SRV"});
+            Attribute srvAttr = attrs.get("SRV");
+
+            if (srvAttr == null || srvAttr.size() == 0)
+                return Collections.emptyList();
+
+            List<String> nearHosts = new ArrayList<>();
+            List<String> farHosts = new ArrayList<>();
+            int minDistance = Integer.MAX_VALUE;
+
+            /* First pass: find minimum distance */
+            List<int[]> records = new ArrayList<>(); /* [distance, index] */
+            List<String> hostnames = new ArrayList<>();
+
+            for (int i = 0; i < srvAttr.size(); i++) {
+                String record = srvAttr.get(i).toString();
+                /* SRV format: "priority weight port target" */
+                String[] parts = record.split("\\s+");
+                if (parts.length < 4) continue;
+
+                int port = Integer.parseInt(parts[2]);
+                String target = parts[3];
+                if (target.endsWith("."))
+                    target = target.substring(0, target.length() - 1);
+
+                int distance = 0;
+                if (port < roomDistance.length)
+                    distance = roomDistance[port];
+
+                if (distance < minDistance)
+                    minDistance = distance;
+
+                records.add(new int[]{distance, i});
+                hostnames.add(target);
+            }
+
+            /* Second pass: partition into near/far */
+            for (int i = 0; i < records.size(); i++) {
+                String host = hostnames.get(i);
+                if (records.get(i)[0] == minDistance)
+                    nearHosts.add(host);
+                else
+                    farHosts.add(host);
+            }
+
+            List<String> result = new ArrayList<>(nearHosts);
+            result.addAll(farHosts);
+
+            logger.debug("bmsSrvLookup {}.comdb2.{}: {} hosts ({} near)",
+                    dbName, tier, result.size(), nearHosts.size());
+            return result;
+
+        } catch (NamingException e) {
+            logger.debug("BMS SRV lookup failed for {}: {}", dnsName, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
      * Reads information from comdb2db cfg file. Returns true if the minimal
      * necessary information has been gathered. Otherwise, returns false.
-     * 
+     *
      * @param path
      * @param hndl
      * @return
@@ -133,6 +327,15 @@ public class DatabaseDiscovery {
                     if (tokens[1].equalsIgnoreCase("iam_identity_v6")
                             && !hndl.hasUseIdentity)
                         hndl.useIdentity = String.valueOf(value_on_off(tokens[2]));
+                    else if (tokens[1].equalsIgnoreCase("use_bmsd")
+                            && !hndl.hasUseBmsd)
+                        hndl.useBmsd = value_on_off(tokens[2]);
+                    else if (tokens[1].equalsIgnoreCase("comdb2db_fallback")
+                            && !hndl.hasComdb2dbFallback)
+                        hndl.comdb2dbFallback = value_on_off(tokens[2]);
+                    else if (tokens[1].equalsIgnoreCase("room_distance")
+                            && hndl.roomDistance == null)
+                        hndl.roomDistance = parseRoomDistance(tokens, 2);
                 } else if (tokens[0].equalsIgnoreCase("comdb2_config")) {
 
                     if (tokens[1].equalsIgnoreCase("default_type")
@@ -159,6 +362,9 @@ public class DatabaseDiscovery {
                                 tokens[1].equalsIgnoreCase("dnssuffix"))
                             && hndl.dnssuffix == null)
                         hndl.dnssuffix = tokens[2];
+                    else if (tokens[1].equalsIgnoreCase("bmssuffix")
+                            && !hndl.hasUserBmsSuffix)
+                        hndl.bmssuffix = tokens[2];
                     else if (tokens[1].equalsIgnoreCase("connect_timeout")
                             && !hndl.hasConnectTimeout) {
                         try {
@@ -602,6 +808,31 @@ public class DatabaseDiscovery {
                         "Could not get database port from user supplied hosts.",
                         error_during_discovery);
             return;
+        }
+
+        /* Try BMS discovery first if enabled and suffix is configured. */
+        boolean useBmsd = hndl.useBmsd && !hndl.bmssuffix.isEmpty();
+        if (useBmsd && hndl.myDbHosts.size() == 0) {
+            String tier = hndl.myDbCluster;
+            List<String> bmsHosts;
+            if (hndl.roomDistance != null && hndl.roomDistance.length > 0)
+                bmsHosts = bmsSrvLookup(hndl.myDbName, tier, hndl.bmssuffix, hndl.roomDistance);
+            else
+                bmsHosts = bmsIpLookup(hndl.myDbName, hndl.machineRoom, tier, hndl.bmssuffix);
+
+            if (!bmsHosts.isEmpty()) {
+                hndl.myDbHosts.addAll(bmsHosts);
+                for (int i = 0; i < bmsHosts.size(); i++)
+                    hndl.myDbPorts.add(-1);
+                logger.debug("BMS discovery found {} hosts for {}/{}",
+                        bmsHosts.size(), hndl.myDbName, tier);
+            } else if (!hndl.comdb2dbFallback) {
+                throw new NoDbHostFoundException(hndl.myDbName,
+                        "BMS discovery failed and comdb2db fallback is disabled.");
+            } else {
+                logger.debug("BMS discovery failed for {}/{}, falling back to comdb2db",
+                        hndl.myDbName, tier);
+            }
         }
 
         /* If !DIRECT_CPU or no hosts in config file, query comdb2db. */

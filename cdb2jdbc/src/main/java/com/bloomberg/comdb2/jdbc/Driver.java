@@ -106,6 +106,9 @@ public class Driver implements java.sql.Driver {
             options.put("comdb2dbname", new StringOption("comdb2dbname", "Comdb2dbName"));
             options.put("tcpbufsz", new IntegerOption("tcpbufsz", "TcpBufSize"));
             options.put("dnssuffix", new StringOption("dnssuffix", "DnsSuffix"));
+            options.put("bmssuffix", new StringOption("bmssuffix", "BmsSuffix"));
+            options.put("use_bmsd", new BooleanOption("use_bmsd", "UseBmsd"));
+            options.put("comdb2db_fallback", new BooleanOption("comdb2db_fallback", "Comdb2dbFallback"));
             options.put("load_balance", new StringOption("load_balance", "Policy"));
             options.put("microsecond_fraction", new StringOption("microsecond_fraction", "MicroSecond"));
             options.put("preferred_machine", new StringOption("preferred_machine", "PrefMach"));

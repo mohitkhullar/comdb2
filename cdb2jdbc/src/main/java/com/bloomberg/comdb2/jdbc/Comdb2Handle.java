@@ -69,6 +69,15 @@ public class Comdb2Handle extends AbstractConnection {
     int age = 180; /* default max age 180 seconds */
     boolean hasAllowPmuxRoute;
     boolean pmuxrte = true;
+
+    /* BMS discovery */
+    boolean useBmsd = true;
+    boolean hasUseBmsd;
+    String bmssuffix = DatabaseDiscovery.DEFAULT_BMS_SUFFIX;
+    boolean hasUserBmsSuffix;
+    boolean comdb2dbFallback = true;
+    boolean hasComdb2dbFallback;
+    int[] roomDistance;
     boolean verifyretry = true;
     boolean stmteffects = true;
     int soTimeout = 5000;
@@ -178,6 +187,13 @@ public class Comdb2Handle extends AbstractConnection {
         ret.tcpbufsz = tcpbufsz;
         ret.age = age;
         ret.pmuxrte = pmuxrte;
+        ret.useBmsd = useBmsd;
+        ret.hasUseBmsd = hasUseBmsd;
+        ret.bmssuffix = bmssuffix;
+        ret.hasUserBmsSuffix = hasUserBmsSuffix;
+        ret.comdb2dbFallback = comdb2dbFallback;
+        ret.hasComdb2dbFallback = hasComdb2dbFallback;
+        ret.roomDistance = roomDistance;
         ret.verifyretry = verifyretry;
         ret.soTimeout = soTimeout;
         ret.hasComdb2dbTimeout = hasComdb2dbTimeout;
@@ -243,6 +259,24 @@ public class Comdb2Handle extends AbstractConnection {
         String passwordEnv = System.getenv("COMDB2_PASSWORD");
         if (passwordEnv != null) {
             addSetStatement("set password " + passwordEnv);
+        }
+
+        String useBmsdEnv = System.getenv("COMDB2_FEATURE_USE_BMSD");
+        if (useBmsdEnv != null) {
+            useBmsd = DatabaseDiscovery.value_on_off(useBmsdEnv);
+            hasUseBmsd = true;
+        }
+
+        String bmssuffixEnv = System.getenv("COMDB2_CONFIG_BMSSUFFIX");
+        if (bmssuffixEnv != null) {
+            bmssuffix = bmssuffixEnv;
+            hasUserBmsSuffix = true;
+        }
+
+        String comdb2dbFallbackEnv = System.getenv("COMDB2_FEATURE_COMDB2DB_FALLBACK");
+        if (comdb2dbFallbackEnv != null) {
+            comdb2dbFallback = DatabaseDiscovery.value_on_off(comdb2dbFallbackEnv);
+            hasComdb2dbFallback = true;
         }
 
         uuid = UUID.randomUUID().toString();
@@ -381,6 +415,21 @@ public class Comdb2Handle extends AbstractConnection {
 
     public void setDnsSuffix(String suffix) {
         dnssuffix = suffix;
+    }
+
+    public void setBmsSuffix(String suffix) {
+        bmssuffix = suffix;
+        hasUserBmsSuffix = true;
+    }
+
+    public void setUseBmsd(boolean val) {
+        useBmsd = val;
+        hasUseBmsd = true;
+    }
+
+    public void setComdb2dbFallback(boolean val) {
+        comdb2dbFallback = val;
+        hasComdb2dbFallback = true;
     }
 
     public void setComdb2dbName(String name) {

@@ -210,6 +210,18 @@ public class Comdb2Connection implements Connection {
         hndl.setDnsSuffix(suffix);
     }
 
+    public void setBmsSuffix(String suffix) {
+        hndl.setBmsSuffix(suffix);
+    }
+
+    public void setUseBmsd(boolean val) {
+        hndl.setUseBmsd(val);
+    }
+
+    public void setComdb2dbFallback(boolean val) {
+        hndl.setComdb2dbFallback(val);
+    }
+
     public void setComdb2dbName(String name) {
         hndl.setComdb2dbName(name);
     }
