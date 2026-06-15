@@ -102,6 +102,8 @@ public class BmsDiscoveryTest {
         Assert.assertEquals("Room 4 should have distance 2001", 2001, hndl.roomDistance[4]);
         Assert.assertEquals("Room 1 should have distance 2001", 2001, hndl.roomDistance[1]);
         Assert.assertEquals("Room 2 should have distance 2001", 2001, hndl.roomDistance[2]);
+        Assert.assertEquals("Room 0 (unset) should default to MAX_VALUE",
+                Integer.MAX_VALUE, hndl.roomDistance[0]);
 
         new File(fname).delete();
     }

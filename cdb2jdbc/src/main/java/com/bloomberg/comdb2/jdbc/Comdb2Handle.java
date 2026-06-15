@@ -74,7 +74,7 @@ public class Comdb2Handle extends AbstractConnection {
     boolean useBmsd = true;
     boolean hasUseBmsd;
     String bmssuffix = DatabaseDiscovery.DEFAULT_BMS_SUFFIX;
-    boolean hasUserBmsSuffix;
+    boolean hasBmsSuffix;
     boolean comdb2dbFallback = true;
     boolean hasComdb2dbFallback;
     int[] roomDistance;
@@ -190,10 +190,10 @@ public class Comdb2Handle extends AbstractConnection {
         ret.useBmsd = useBmsd;
         ret.hasUseBmsd = hasUseBmsd;
         ret.bmssuffix = bmssuffix;
-        ret.hasUserBmsSuffix = hasUserBmsSuffix;
+        ret.hasBmsSuffix = hasBmsSuffix;
         ret.comdb2dbFallback = comdb2dbFallback;
         ret.hasComdb2dbFallback = hasComdb2dbFallback;
-        ret.roomDistance = roomDistance;
+        ret.roomDistance = (roomDistance != null) ? roomDistance.clone() : null;
         ret.verifyretry = verifyretry;
         ret.soTimeout = soTimeout;
         ret.hasComdb2dbTimeout = hasComdb2dbTimeout;
@@ -270,7 +270,7 @@ public class Comdb2Handle extends AbstractConnection {
         String bmssuffixEnv = System.getenv("COMDB2_CONFIG_BMSSUFFIX");
         if (bmssuffixEnv != null) {
             bmssuffix = bmssuffixEnv;
-            hasUserBmsSuffix = true;
+            hasBmsSuffix = true;
         }
 
         String comdb2dbFallbackEnv = System.getenv("COMDB2_FEATURE_COMDB2DB_FALLBACK");
@@ -419,7 +419,7 @@ public class Comdb2Handle extends AbstractConnection {
 
     public void setBmsSuffix(String suffix) {
         bmssuffix = suffix;
-        hasUserBmsSuffix = true;
+        hasBmsSuffix = true;
     }
 
     public void setUseBmsd(boolean val) {

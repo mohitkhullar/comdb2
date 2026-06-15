@@ -136,6 +136,7 @@ public class DatabaseDiscovery {
                 maxRoom = room;
 
         int[] result = new int[maxRoom + 1];
+        Arrays.fill(result, Integer.MAX_VALUE);
         for (Map.Entry<Integer, Integer> e : entries.entrySet())
             result[e.getKey()] = e.getValue();
 
@@ -230,7 +231,7 @@ public class DatabaseDiscovery {
                 if (target.endsWith("."))
                     target = target.substring(0, target.length() - 1);
 
-                int distance = 0;
+                int distance = Integer.MAX_VALUE;
                 if (port < roomDistance.length)
                     distance = roomDistance[port];
 
@@ -363,7 +364,7 @@ public class DatabaseDiscovery {
                             && hndl.dnssuffix == null)
                         hndl.dnssuffix = tokens[2];
                     else if (tokens[1].equalsIgnoreCase("bmssuffix")
-                            && !hndl.hasUserBmsSuffix)
+                            && !hndl.hasBmsSuffix)
                         hndl.bmssuffix = tokens[2];
                     else if (tokens[1].equalsIgnoreCase("connect_timeout")
                             && !hndl.hasConnectTimeout) {
