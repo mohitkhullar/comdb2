@@ -1257,7 +1257,8 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
     h->when = thd->stime;
     h->txnid = clnt->osql.rqid;
 
-    time_metric_add(thedb->service_time, h->cost.time);
+    if (!can_consume(clnt))
+        time_metric_add(thedb->service_time, h->cost.time);
     clnt->last_cost = (int64_t) h->cost.cost;
 
     /* request logging framework takes care of logging long sql requests */
@@ -1343,7 +1344,8 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
 
     if (clnt->rawnodestats) {
         clnt->rawnodestats->sql_steps += get_sql_steps(thd);
-        time_metric_add(clnt->rawnodestats->svc_time, h->cost.time);
+        if (!can_consume(clnt))
+            time_metric_add(clnt->rawnodestats->svc_time, h->cost.time);
         if (have_fingerprint)
             add_fingerprint_to_rawstats(clnt->rawnodestats, fingerprint, cost,
                                         rows, time);
@@ -4845,6 +4847,7 @@ void sqlengine_work_appsock(struct sqlthdstate *thd, struct sqlclntstate *clnt)
     thr_set_user("appsock", (intptr_t)clnt->appsock_id);
 
     clnt->added_to_hist = clnt->isselect = 0;
+    clnt->was_consumer = 0;
     clnt_change_state(clnt, CONNECTION_RUNNING);
     clnt->osql.timings.query_dispatched = osql_log_time();
     clnt->deque_timeus = comdb2_time_epochus();
@@ -5506,6 +5509,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
 
     /* Reset the version, we have to set it for every run */
     clnt->spname[0] = 0;
+    clnt->was_consumer = 0;
     clnt->spversion.version_num = 0;
     free(clnt->spversion.version_str);
     clnt->spversion.version_str = NULL;

@@ -6851,6 +6851,7 @@ static int exec_procedure_int(struct sqlthdstate *thd,
     int consumer = 0;
     if (trigger) {
         sp->can_consume = 1;
+        clnt->was_consumer = 1;
         remove_tran_funcs(L);
         remove_thd_funcs(L);
         remove_emit(L);
@@ -6861,6 +6862,7 @@ static int exec_procedure_int(struct sqlthdstate *thd,
         if (getqueuebyname(qname)) {
             consumer = 1;
             sp->can_consume = 1;
+            clnt->was_consumer = 1;
         }
         unlock_schema_lk();
         if (consumer) add_consumer_funcs(L);
@@ -6949,7 +6951,9 @@ int is_pingpong(struct sqlclntstate *clnt)
 
 int can_consume(struct sqlclntstate *clnt)
 {
-    if (clnt == NULL || clnt->sp == NULL) return 0;
+    if (clnt == NULL) return 0;
+    if (clnt->was_consumer) return 1;
+    if (clnt->sp == NULL) return 0;
     return clnt->sp->can_consume;
 }
 

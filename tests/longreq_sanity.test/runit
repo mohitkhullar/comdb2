@@ -132,5 +132,93 @@ fi
 
 echo "Test 6 passed"
 
+# ---- Test 7: consumer SP exit should not generate LONGREQ ----
+echo "Test 7: consumer SP should not appear in LONGREQ after exit"
+
+$r "create table if not exists tqueue (i int)" >/dev/null
+
+$r <<'EOF' >/dev/null
+create procedure consumer_longreq_test version 'test' {
+local function main()
+    local c = db:consumer()
+    local e = c:get()
+    if e then
+        c:consume()
+    end
+end
+}$$
+create lua consumer consumer_longreq_test on (table tqueue for insert)
+EOF
+
+$r "insert into tqueue values(1)" >/dev/null
+
+sleep 3
+
+if grep 'LONG REQUEST' $logfile | grep -q 'consumer_longreq_test'; then
+    echo "FAIL: consumer SP generated a LONG REQUEST after exiting" >&2
+    exit 1
+fi
+
+echo "Test 7 passed"
+
+# ---- Test 8: was_consumer flag must not leak to next query on same connection ----
+echo "Test 8: regular query after consumer SP should still generate LONGREQ"
+
+# Create a separate queue/consumer to avoid racing with the Test 7 trigger consumer
+$r "create table if not exists tqueue2 (i int)" >/dev/null
+
+$r <<'EOF' >/dev/null
+create procedure consumer_leak_test version 'test' {
+local function main()
+    local c = db:consumer()
+    local e = c:get()
+    if e then
+        c:consume()
+    end
+end
+}$$
+create lua consumer consumer_leak_test on (table tqueue2 for insert)
+EOF
+
+# Insert data so the consumer has something to consume immediately
+$r "insert into tqueue2 values(1)" >/dev/null
+sleep 1
+
+# Use a FIFO to keep the same cdb2sql connection open across multiple statements.
+fifo8=$(mktemp -u)
+outfile8=$(mktemp)
+mkfifo $fifo8
+
+$r < $fifo8 > $outfile8 2>&1 &
+pid8=$!
+exec 4> $fifo8
+
+# Run the consumer SP on this connection (triggers was_consumer=1)
+# Insert again to ensure there is data for this explicit invocation
+$r "insert into tqueue2 values(2)" >/dev/null
+echo "exec procedure consumer_leak_test()" >&4
+echo "select 'consumer_done'" >&4
+while ! grep -q 'consumer_done' $outfile8; do sleep 0.1; done
+
+# Now run a slow query on the same connection — should still produce LONGREQ
+echo "set maxtransize 200000" >&4
+echo "update tlr set v=v+4" >&4
+echo "select 'update_done'" >&4
+while ! grep -q 'update_done' $outfile8; do sleep 0.1; done
+
+exec 4>&-
+wait $pid8
+rm -f $fifo8 $outfile8
+
+sleep 2
+
+# If was_consumer leaked, can_consume() returns 1 and reqlog skips the LONGREQ
+if ! grep -q 'sql=update tlr set v=v+4' $logfile; then
+    echo "FAIL: regular query after consumer SP did not generate LONGREQ (was_consumer leaked)" >&2
+    exit 1
+fi
+
+echo "Test 8 passed"
+
 echo "All tests passed."
 exit 0

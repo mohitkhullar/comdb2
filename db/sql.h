@@ -791,6 +791,7 @@ struct sqlclntstate {
 
     /* lua stored procedure */
     struct stored_proc *sp;
+    unsigned was_consumer : 1;
     int exec_lua_thread;
     int want_stored_procedure_trace;
     char spname[MAX_SPNAME + 1];
