@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Verify table rename correctness:
+# 1) bdb_rename_table_metadata must delete orphaned table_version entries so
+#    a fresh table created with the old name starts at version 0.
+# 2) reload_rename_table (replicant scdone callback) must refresh file versions
+#    so dtavers[]/ixvers[] reflect the renamed files.
+
+source ${TESTSROOTDIR}/tools/runit_common.sh
+source ${TESTSROOTDIR}/tools/cluster_utils.sh
+
+dbnm=$1
+
+# Step 1: Insert data into t1 (created via lrl.options)
+echo "Step 1: Populating t1 with 5 rows"
+for i in 10 20 30 40 50; do
+    cdb2sql ${CDB2_OPTIONS} $dbnm default "insert into t1 values ($i)"
+done
+assertcnt t1 5 "t1 should have 5 rows after initial insert"
+
+# Record t1's initial table version
+v1=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm default "select table_version('t1')")
+echo "  t1 initial table_version = $v1"
+
+# Step 2: Create t2, populate it, then drop it
+echo "Step 2: Create t2, populate, drop"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "create table t2(id int)" || failexit "create t2"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "insert into t2 values (100)"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "insert into t2 values (200)"
+assertcnt t2 2 "t2 should have 2 rows"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "drop table t2" || failexit "drop t2"
+
+# Step 3: Rename t1 -> t2
+echo "Step 3: Rename t1 to t2"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "alter table t1 rename to t2" || failexit "rename t1→t2"
+assertcnt t2 5 "t2 should have 5 rows (data from t1)"
+
+# Step 4: Check tablesizes on replicant (fix 2: stale dtavers)
+if [ -n "$CLUSTER" ]; then
+    sleep 2
+    master=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm default "select host from comdb2_cluster where is_master='Y'")
+    replicant=""
+    for node in $(getclusternodes); do
+        if [ "$node" != "$master" ]; then
+            replicant=$node
+            break
+        fi
+    done
+    echo "Step 4: Verify tablesizes on replicant $replicant after rename"
+    master_sz=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm --host $master "select bytes from comdb2_tablesizes where tablename='t2'")
+    rep_sz=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm --host $replicant "select bytes from comdb2_tablesizes where tablename='t2'")
+    echo "  Master: t2 bytes=$master_sz"
+    echo "  Replicant: t2 bytes=$rep_sz"
+    if [ "$rep_sz" = "0" ] && [ "$master_sz" != "0" ]; then
+        failexit "Replicant reports bytes=0 for t2 (stale file versions)"
+    fi
+fi
+
+# Step 5: Rename t2 back to t1
+echo "Step 5: Rename t2 back to t1"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "alter table t2 rename to t1" || failexit "rename t2→t1"
+assertcnt t1 5 "t1 should have 5 rows after rename-back"
+
+# Step 6: Create a FRESH t2 — this is where the bug manifests.
+# The old table_version entry for "t2" (orphaned by step 5's rename)
+# is still in LLMETA. The new table picks it up instead of starting at 0.
+echo "Step 6: Create fresh t2"
+cdb2sql ${CDB2_OPTIONS} $dbnm default "create table t2(id int)" || failexit "create fresh t2"
+
+v2=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm default "select table_version('t2')")
+echo "  Fresh t2 table_version = $v2 (should be 0 for a brand-new table)"
+
+if [ "$v2" != "0" ]; then
+    echo "  BUG: fresh t2 inherited stale table_version $v2 from orphaned LLMETA entry"
+    failexit "Fresh table t2 has stale table_version $v2 instead of 0"
+fi
+
+# Step 7: Verify data integrity
+assertcnt t1 5 "t1 data preserved"
+assertcnt t2 0 "t2 is empty (fresh)"
+
+# Step 8: Cluster verification
+if [ -n "$CLUSTER" ]; then
+    echo "Step 8: Verifying on each cluster node"
+    for node in $(getclusternodes); do
+        cnt=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm --host $node "select count(*) from t1")
+        echo "  Node $node: t1=$cnt"
+        [ "$cnt" != "5" ] && failexit "Node $node: t1 count $cnt != 5"
+        v=$($CDB2SQL_EXE --tabs ${CDB2_OPTIONS} $dbnm --host $node "select table_version('t2')")
+        echo "  Node $node: t2 version=$v"
+    done
+fi
+
+echo "Success"

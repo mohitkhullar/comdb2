@@ -11166,6 +11166,11 @@ int bdb_rename_table_metadata(bdb_state_type *bdb_state, tran_type *tran,
     if (rc)
         return rc;
 
+    /* delete old name's table_version entry */
+    rc = bdb_table_version_delete(bdb_state, tran, bdberr);
+    if (rc)
+        return rc;
+
     /* rename files finally, with new versions */
     rc = bdb_rename_files(bdb_state, tran, newname, bdberr);
     if (rc)

@@ -1136,6 +1136,26 @@ backout:
     return -1;
 }
 
+int bdb_reload_file_versions(bdb_state_type *bdb_state, tran_type *tran, int *bdberr)
+{
+    unsigned long long version_num;
+
+    for (int dtanum = 0; dtanum < bdb_state->numdtafiles; dtanum++) {
+        if (bdb_get_file_version_data(bdb_state, tran, dtanum, &version_num, bdberr))
+            return -1;
+        bdb_state->dtavers[dtanum] = version_num;
+    }
+
+    for (int ixnum = 0; ixnum < bdb_state->numix; ixnum++) {
+        if (bdb_get_file_version_index(bdb_state, tran, ixnum, &version_num, bdberr))
+            return -1;
+        bdb_state->ixvers[ixnum] = version_num;
+    }
+
+    *bdberr = BDBERR_NOERROR;
+    return 0;
+}
+
 int bdb_rename_table(bdb_state_type *bdb_state, tran_type *tran, char *newname,
                      int *bdberr)
 {

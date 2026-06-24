@@ -38,8 +38,7 @@ extern int gbl_retro_tpt_verbose;
 
 extern void free_cached_idx(uint8_t **cached_idx);
 
-static int reload_rename_table(tran_type *tran, const char *name,
-                               const char *newtable)
+static int reload_rename_table(tran_type *tran, const char *name, const char *newtable)
 {
     int bdberr = 0;
     struct dbtable *db = get_dbtable_by_name(name);
@@ -50,15 +49,17 @@ static int reload_rename_table(tran_type *tran, const char *name,
     }
 
     if (rename_db(db, newtable)) {
-        logmsg(LOGMSG_ERROR, "%s: failed to rename %s to %s \n", __func__, name,
-               newtable);
+        logmsg(LOGMSG_ERROR, "%s: failed to rename %s to %s \n", __func__, name, newtable);
+        return -1;
+    }
+
+    if (bdb_reload_file_versions(db->handle, tran, &bdberr)) {
+        logmsg(LOGMSG_ERROR, "%s: failed to reload file versions for %s\n", __func__, newtable);
         return -1;
     }
 
     if (bdb_table_version_select(newtable, tran, &db->tableversion, &bdberr)) {
-        logmsg(LOGMSG_ERROR,
-               "%s: failed to retrieve table version for new %s \n", __func__,
-               newtable);
+        logmsg(LOGMSG_ERROR, "%s: failed to retrieve table version for new %s \n", __func__, newtable);
         return -1;
     }
 
