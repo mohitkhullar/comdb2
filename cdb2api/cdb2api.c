@@ -7404,7 +7404,7 @@ static int bms_srv_lookup(char hosts[][CDB2HOSTNAME_LEN], const char *dbname, co
     }
 #ifdef CDB2API_TEST
     for (int i = 0; i < *num_hosts; i++) {
-        fprintf(stderr, "FINAL NODE no:%d host:%s near nodes:%d\n", i, hosts[i], near_nodes);
+        LOG_CALL("FINAL NODE no:%d host:%s near nodes:%d\n", i, hosts[i], near_nodes);
     }
 #endif
     if (num_same_room)
@@ -7489,7 +7489,7 @@ no_roomresult:
     }
 #ifdef CDB2API_TEST
     for (int i = 0; i < *num_hosts; i++) {
-        fprintf(stderr, "FINAL NODE no:%d host:%s near nodes:%d\n", i, hosts[i], start_count);
+        LOG_CALL("FINAL NODE no:%d host:%s near nodes:%d\n", i, hosts[i], start_count);
     }
 #endif
     return 0;
@@ -7517,7 +7517,7 @@ static int comdb2db_get_dbhosts(cdb2_hndl_tp *hndl, const char *comdb2db_name, i
 
 #ifdef CDB2API_TEST
     if (cdb2_use_bmsd)
-        fprintf(stderr, "Going ahead with comdb2db query\n");
+        LOG_CALL("Going ahead with comdb2db query\n");
 #endif
     if (!find_shards)
         *dbnum = 0;
