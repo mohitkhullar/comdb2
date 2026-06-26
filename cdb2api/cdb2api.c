@@ -7517,7 +7517,7 @@ static int comdb2db_get_dbhosts(cdb2_hndl_tp *hndl, const char *comdb2db_name, i
 
 #ifdef CDB2API_TEST
     if (cdb2_use_bmsd)
-        printf("Going ahead with comdb2db query\n");
+        fprintf(stderr, "Going ahead with comdb2db query\n");
 #endif
     if (!find_shards)
         *dbnum = 0;
