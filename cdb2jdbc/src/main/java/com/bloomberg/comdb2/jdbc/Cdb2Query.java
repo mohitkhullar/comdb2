@@ -39,6 +39,8 @@ public class Cdb2Query implements Serializable {
         String varName;
         int type;
         byte[] value;
+        String arrayType;
+        Object[] arrayElements;
     }
 
     static class Cdb2ReqInfo {

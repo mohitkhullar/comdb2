@@ -27,6 +27,8 @@ public class Constants {
         public static final int CDB2_REQUEST_DBINFO = 3;
     }
 
+    public static final int CDB2_MAX_BIND_ARRAY = 32767;
+
     public class Types {
         public static final int CDB2_INTEGER = 1;
         public static final int CDB2_REAL = 2;

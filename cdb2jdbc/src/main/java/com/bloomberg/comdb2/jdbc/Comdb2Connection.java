@@ -694,7 +694,20 @@ public class Comdb2Connection implements Connection {
     @Override
     public Array createArrayOf(String typeName, Object[] elements)
             throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        if (typeName == null)
+            throw new SQLException("typeName must not be null");
+        String lower = typeName.toLowerCase();
+        if (!lower.equals("int32") && !lower.equals("int64") &&
+            !lower.equals("double") && !lower.equals("text") &&
+            !lower.equals("blob"))
+            throw new SQLException("Unsupported carray type: " + typeName +
+                    ". Supported types: int32, int64, double, text, blob");
+        if (elements == null || elements.length == 0)
+            throw new SQLException("Array must have at least one element");
+        if (elements.length > Constants.CDB2_MAX_BIND_ARRAY)
+            throw new SQLException("Array length " + elements.length +
+                    " exceeds maximum of " + Constants.CDB2_MAX_BIND_ARRAY);
+        return new Comdb2Array(lower, elements);
     }
 
     @Override
@@ -835,6 +848,85 @@ public class Comdb2Connection implements Connection {
 
     public void clearAck() {
         hndl.clearAck();
+    }
+
+    static class Comdb2Array implements Array {
+
+        private String typeName;
+        private Object[] elements;
+
+        Comdb2Array(String typeName, Object[] elements) {
+            this.typeName = typeName;
+            this.elements = elements;
+        }
+
+        @Override
+        public String getBaseTypeName() throws SQLException {
+            return typeName;
+        }
+
+        @Override
+        public int getBaseType() throws SQLException {
+            switch (typeName) {
+                case "int32":
+                case "int64":
+                    return Types.INTEGER;
+                case "double":
+                    return Types.DOUBLE;
+                case "text":
+                    return Types.VARCHAR;
+                case "blob":
+                    return Types.BLOB;
+                default:
+                    throw new SQLException("Unknown carray type: " + typeName);
+            }
+        }
+
+        @Override
+        public Object getArray() throws SQLException {
+            return elements.clone();
+        }
+
+        @Override
+        public Object getArray(Map<String, Class<?>> map) throws SQLException {
+            return getArray();
+        }
+
+        @Override
+        public Object getArray(long index, int count) throws SQLException {
+            throw new SQLFeatureNotSupportedException();
+        }
+
+        @Override
+        public Object getArray(long index, int count, Map<String, Class<?>> map) throws SQLException {
+            throw new SQLFeatureNotSupportedException();
+        }
+
+        @Override
+        public ResultSet getResultSet() throws SQLException {
+            throw new SQLFeatureNotSupportedException();
+        }
+
+        @Override
+        public ResultSet getResultSet(Map<String, Class<?>> map) throws SQLException {
+            throw new SQLFeatureNotSupportedException();
+        }
+
+        @Override
+        public ResultSet getResultSet(long index, int count) throws SQLException {
+            throw new SQLFeatureNotSupportedException();
+        }
+
+        @Override
+        public ResultSet getResultSet(long index, int count, Map<String, Class<?>> map) throws SQLException {
+            throw new SQLFeatureNotSupportedException();
+        }
+
+        @Override
+        public void free() throws SQLException {
+            elements = null;
+            typeName = null;
+        }
     }
 }
 /* vim: set sw=4 ts=4 et: */

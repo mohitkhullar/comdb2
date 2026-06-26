@@ -420,7 +420,74 @@ public class Comdb2PreparedStatement extends Comdb2Statement implements Prepared
 
     @Override
     public void setArray(int parameterIndex, Array x) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        if (parameterIndex <= 0)
+            return;
+        if (x == null) {
+            setNull(parameterIndex, Types.NULL);
+            return;
+        }
+        String typeName = x.getBaseTypeName().toLowerCase();
+        Object[] elements = (Object[]) x.getArray();
+        int cdb2Type;
+        switch (typeName) {
+            case "int32":
+            case "int64":
+                cdb2Type = Constants.Types.CDB2_INTEGER;
+                break;
+            case "double":
+                cdb2Type = Constants.Types.CDB2_REAL;
+                break;
+            case "text":
+                cdb2Type = Constants.Types.CDB2_CSTRING;
+                break;
+            case "blob":
+                cdb2Type = Constants.Types.CDB2_BLOB;
+                break;
+            default:
+                throw new SQLException("Unsupported carray type: " + typeName);
+        }
+        bindArrayParameter(parameterIndex, cdb2Type, typeName, elements);
+    }
+
+    private void bindArrayParameter(int index, int type, String arrayType, Object[] elements) {
+        if (index <= 0)
+            return;
+        Cdb2BindValue newVal = new Cdb2BindValue();
+        newVal.index = index;
+        newVal.type = type;
+        newVal.value = new byte[]{};
+        newVal.arrayType = arrayType;
+        newVal.arrayElements = elements;
+        intBindVars.put(index, newVal);
+    }
+
+    public void setInt32Array(int parameterIndex, int[] values) {
+        Object[] elements = new Object[values.length];
+        for (int i = 0; i < values.length; i++)
+            elements[i] = values[i];
+        bindArrayParameter(parameterIndex, Constants.Types.CDB2_INTEGER, "int32", elements);
+    }
+
+    public void setInt64Array(int parameterIndex, long[] values) {
+        Object[] elements = new Object[values.length];
+        for (int i = 0; i < values.length; i++)
+            elements[i] = values[i];
+        bindArrayParameter(parameterIndex, Constants.Types.CDB2_INTEGER, "int64", elements);
+    }
+
+    public void setDoubleArray(int parameterIndex, double[] values) {
+        Object[] elements = new Object[values.length];
+        for (int i = 0; i < values.length; i++)
+            elements[i] = values[i];
+        bindArrayParameter(parameterIndex, Constants.Types.CDB2_REAL, "double", elements);
+    }
+
+    public void setTextArray(int parameterIndex, String[] values) {
+        bindArrayParameter(parameterIndex, Constants.Types.CDB2_CSTRING, "text", values);
+    }
+
+    public void setBlobArray(int parameterIndex, byte[][] values) {
+        bindArrayParameter(parameterIndex, Constants.Types.CDB2_BLOB, "blob", values);
     }
 
     @Override

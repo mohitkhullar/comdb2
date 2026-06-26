@@ -211,6 +211,10 @@ public class ProtobufProtocol implements Protocol {
                     param.setValue(ByteString.copyFrom(bindVar.value));
                 }
 
+                if (bindVar.arrayElements != null) {
+                    param.setCarray(buildCarrayProto(bindVar.arrayType, bindVar.arrayElements));
+                }
+
                 _sqlquery.addBindvars(param.setType(bindVar.type).build());
             }
 
@@ -248,6 +252,50 @@ public class ProtobufProtocol implements Protocol {
 
         _lastQuery = _query.build();
         return _lastQuery.getSerializedSize();
+    }
+
+    private bindvalue.array buildCarrayProto(String arrayType, Object[] elements) {
+        bindvalue.array.Builder arrayBuilder = bindvalue.array.newBuilder();
+
+        switch (arrayType) {
+            case "int32": {
+                bindvalue.i32_array.Builder b = bindvalue.i32_array.newBuilder();
+                for (Object e : elements)
+                    b.addElements(((Number) e).intValue());
+                arrayBuilder.setI32(b.build());
+                break;
+            }
+            case "int64": {
+                bindvalue.i64_array.Builder b = bindvalue.i64_array.newBuilder();
+                for (Object e : elements)
+                    b.addElements(((Number) e).longValue());
+                arrayBuilder.setI64(b.build());
+                break;
+            }
+            case "double": {
+                bindvalue.dbl_array.Builder b = bindvalue.dbl_array.newBuilder();
+                for (Object e : elements)
+                    b.addElements(((Number) e).doubleValue());
+                arrayBuilder.setDbl(b.build());
+                break;
+            }
+            case "text": {
+                bindvalue.txt_array.Builder b = bindvalue.txt_array.newBuilder();
+                for (Object e : elements)
+                    b.addElements((String) e);
+                arrayBuilder.setTxt(b.build());
+                break;
+            }
+            case "blob": {
+                bindvalue.blob_array.Builder b = bindvalue.blob_array.newBuilder();
+                for (Object e : elements)
+                    b.addElements(ByteString.copyFrom((byte[]) e));
+                arrayBuilder.setBlob(b.build());
+                break;
+            }
+        }
+
+        return arrayBuilder.build();
     }
 }
 /* vim: set sw=4 ts=4 et: */
