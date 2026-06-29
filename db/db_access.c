@@ -195,6 +195,9 @@ char *get_current_user(struct sqlclntstate *clnt)
         clnt->current_user.have_name) {
         return clnt->current_user.name;
     }
+    if (clnt && clnt->externalAuthUser) {
+        return clnt->externalAuthUser;
+    }
     return NULL;
 }
 

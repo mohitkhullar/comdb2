@@ -32,6 +32,22 @@ run_expect_success() {
     fi
 }
 
+run_expect_output() {
+    local principal="$1"
+    local sql="$2"
+    local expected="$3"
+    local desc="$4"
+    local actual
+    actual=$($SA "$principal" "$sql" 2>/dev/null)
+    if [ "$actual" = "$expected" ]; then
+        echo "  PASS: $desc"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL: $desc (expected '$expected', got '$actual')"
+        failed=$((failed + 1))
+    fi
+}
+
 run_expect_failure() {
     local principal="$1"
     local sql="$2"
@@ -433,6 +449,19 @@ run_expect_success "$OP" "insert into comdb2_simple_auth(cluster, user, bpkg, ve
     "restore wildcard rule"
 run_expect_success "$OP" "delete from comdb2_simple_auth where user = 'op' or user = 'mohit'" \
     "clean up user-specific rules"
+
+#---------------------------------------------------------------
+echo "Test: comdb2_user() returns external auth principal"
+#---------------------------------------------------------------
+run_expect_output "$MOHIT" "select comdb2_user()" \
+    "(comdb2_user()='bpi:procauth:cluster:testcluster:user:mohit:bpkg:myapp')" \
+    "comdb2_user() returns mohit principal"
+run_expect_output "$MIKE" "select comdb2_user()" \
+    "(comdb2_user()='bpi:procauth:cluster:prod:user:mike:bpkg:cdb2sql')" \
+    "comdb2_user() returns mike principal"
+run_expect_output "$MARK" "select comdb2_user()" \
+    "(comdb2_user()='bpi:procauth:cluster:test:user:mk:bpkg:myapp')" \
+    "comdb2_user() returns mark principal"
 
 #---------------------------------------------------------------
 echo "Test: cleanup"
