@@ -1656,6 +1656,7 @@ extern int gbl_unauth_tag_access;
 extern int gbl_uses_externalauth;
 extern int gbl_vtab_externalauth;
 extern int gbl_vtab_externalauth_strict;
+extern int gbl_vtab_externalauth_warn;
 #ifdef COMDB2_TEST
 extern int gbl_uses_simpleauth;
 #endif

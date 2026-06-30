@@ -446,26 +446,23 @@ int access_control_check_read(struct ireq *iq, tran_type *trans, int *bdberr)
 int comdb2_check_vtab_access(sqlite3 *db, sqlite3_module *module)
 {
     HashElem *current;
-    int dryrun = 0;
 
     if (!gbl_uses_password && !(gbl_uses_externalauth && gbl_vtab_externalauth)) {
-        if (gbl_uses_externalauth && !gbl_vtab_externalauth)
-            dryrun = 1;
+        if (gbl_uses_externalauth && !gbl_vtab_externalauth && gbl_vtab_externalauth_warn)
+            ; /* fall through to warn-only check */
         else
             return 0;
     }
 
     struct sql_thread *thd = pthread_getspecific(query_info_key);
 
-    for (current = sqliteHashFirst(&db->aModule); current;
-         current = sqliteHashNext(current)) {
+    for (current = sqliteHashFirst(&db->aModule); current; current = sqliteHashNext(current)) {
         struct Module *mod = sqliteHashData(current);
         if (module != mod->pModule) {
             continue;
         }
 
-        if ((module->access_flag == 0) ||
-            (module->access_flag & CDB2_ALLOW_ALL)) {
+        if ((module->access_flag == 0) || (module->access_flag & CDB2_ALLOW_ALL)) {
             return SQLITE_OK;
         }
 
@@ -476,7 +473,7 @@ int comdb2_check_vtab_access(sqlite3 *db, sqlite3_module *module)
 
         int rc = access_control_check_sql_read(NULL, thd, (char *)mod->zName);
         if (rc != SQLITE_OK) {
-            if (dryrun) {
+            if (!gbl_vtab_externalauth && gbl_vtab_externalauth_warn) {
                 struct sqlclntstate *clnt = thd->clnt;
                 if (errstat_get_rc(&clnt->osql.xerr) == SQLITE_ACCESS)
                     bzero(&clnt->osql.xerr, sizeof(clnt->osql.xerr));
