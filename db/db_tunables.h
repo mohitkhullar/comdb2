@@ -2494,6 +2494,9 @@ REGISTER_TUNABLE("iam_usermetric_verbosity", "IAM user metric verbosity [Default
 REGISTER_TUNABLE("iam_decision_history", "Enable IAM decision history [Default: 1 (on)]", TUNABLE_INTEGER,
                  &gbl_iam_decision_history, 1, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("iam_metric_interval_sec", "IAM GUTS metric publish interval in seconds [Default: 60]", TUNABLE_INTEGER,
+                 &gbl_iam_metric_interval_sec, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("iam_allow_sp_resource", "Allow stored-procedure as IAM resource [Default: 1 (on)]", TUNABLE_INTEGER,
                  &gbl_use_sp_resource, 0, NULL, NULL, NULL, NULL);
 

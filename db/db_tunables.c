@@ -407,6 +407,7 @@ extern int gbl_noleader_retry_poll_ms;
 extern char *gbl_iam_dbname;
 extern char *gbl_iam_base_bri;
 extern char *gbl_iam_metrics_namespace;
+extern int gbl_iam_metric_interval_sec;
 extern int gbl_uses_externalauth;
 
 /* util/ctrace.c */
