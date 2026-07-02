@@ -257,6 +257,45 @@ typedef struct local_connection_cache_list local_connection_cache_list;
 static int cdb2cfg_override = 0;
 static int default_type_override_env = 0;
 
+/* --- Result cache --- */
+struct result_cache_row {
+    uint8_t *buf;
+    int len;
+};
+
+struct result_cache_entry {
+    struct result_cache_entry *next;
+    uint64_t key_hash;
+    char *dbname;
+    char *cache_key;
+    int cache_key_len;
+    time_t created_at;
+    int ttl_sec;
+    uint8_t *first_buf;
+    int first_buf_len;
+    struct result_cache_row *rows;
+    int n_rows;
+};
+
+struct cdb2_cache_policy {
+    struct cdb2_cache_policy *next;
+    char *sql_pattern;
+    int ttl_sec;
+};
+
+#define RESULT_CACHE_BUCKETS 256
+
+static struct {
+    struct result_cache_entry *buckets[RESULT_CACHE_BUCKETS];
+    int n_entries;
+    int max_entries;
+    int default_ttl_sec;
+} g_result_cache = {{0}, 0, 0, 60};
+
+static pthread_mutex_t result_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static int max_result_cache_entries_envvar = 0;
+static int result_cache_ttl_envvar = 0;
+
 /* Each feature needs to be enabled by default */
 static int connect_host_on_reject = 1;
 static int cdb2_connect_host_on_reject_set_from_env = 0;
@@ -389,6 +428,11 @@ MAKE_CDB2API_TEST_COUNTER(num_sockpool_recv)
 MAKE_CDB2API_TEST_COUNTER(num_sockpool_send)
 MAKE_CDB2API_TEST_COUNTER(num_sockpool_recv_timeouts)
 MAKE_CDB2API_TEST_COUNTER(num_sockpool_send_timeouts)
+MAKE_CDB2API_TEST_COUNTER(num_result_cache_hits)
+MAKE_CDB2API_TEST_COUNTER(num_result_cache_misses)
+MAKE_CDB2API_TEST_COUNTER(num_result_cache_stores)
+MAKE_CDB2API_TEST_COUNTER(num_result_cache_evicts)
+MAKE_CDB2API_TEST_COUNTER(num_result_cache_invalidations)
 
 // The tunable value needs to be a string literal or have the lifetime
 // managed by the caller - I could strdup locally, but don't want to be
@@ -643,6 +687,7 @@ static
 #endif
     void
     local_connection_cache_clear(int);
+static void result_cache_clear(void);
 
 static void atfork_prepare(void) {
     pthread_mutex_lock(&cdb2_sockpool_mutex);
@@ -658,6 +703,7 @@ static void atfork_me(void) {
 
 static void atfork_child(void) {
     local_connection_cache_clear(0);
+    result_cache_clear();
     sockpool_close_all();
     local_connection_cache_owner_pid = _PID = getpid();
     if (identity_cb)
@@ -793,6 +839,9 @@ static void process_env_vars(void)
                                &local_connection_cache_use_sbuf_envvar);
     process_env_var_str_on_off("COMDB2_CONFIG_LOCAL_CONNECTION_CACHE_CHECK_PID", &local_connection_cache_check_pid,
                                &local_connection_cache_check_pid_envvar);
+    process_env_var_int("COMDB2_CONFIG_MAX_RESULT_CACHE_ENTRIES", &g_result_cache.max_entries,
+                        &max_result_cache_entries_envvar);
+    process_env_var_int("COMDB2_CONFIG_RESULT_CACHE_TTL", &g_result_cache.default_ttl_sec, &result_cache_ttl_envvar);
     process_env_var_str_on_off("COMDB2_CONFIG_USE_ENV_VARS", &cdb2_use_env_vars, 0);
 
     if (cdb2_use_env_vars) {
@@ -836,6 +885,262 @@ int get_max_local_connection_cache_entries(void)
     return max_local_connection_cache_entries;
 }
 #endif
+
+/* --- Result cache helper functions --- */
+
+static uint64_t fnv1a_64(const void *data, int len)
+{
+    const uint8_t *p = data;
+    uint64_t h = 14695981039346656037ULL;
+    for (int i = 0; i < len; i++) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static int result_cache_build_key(const char *dbname, const char *sql, int n_bindvars,
+                                  CDB2SQLQUERY__Bindvalue **bindvars, char **key_out, int *key_len_out,
+                                  uint64_t *hash_out)
+{
+    int dbname_len = strlen(dbname);
+    int sql_len = strlen(sql);
+    int total = dbname_len + 1 + sql_len + 1;
+
+    for (int i = 0; i < n_bindvars; i++) {
+        CDB2SQLQUERY__Bindvalue *bv = bindvars[i];
+        total += sizeof(int); /* type */
+        total += sizeof(int); /* value len */
+        if (bv->value.len > 0)
+            total += bv->value.len;
+    }
+
+    char *key = malloc(total);
+    if (!key)
+        return -1;
+
+    int off = 0;
+    memcpy(key + off, dbname, dbname_len + 1);
+    off += dbname_len + 1;
+    memcpy(key + off, sql, sql_len + 1);
+    off += sql_len + 1;
+
+    for (int i = 0; i < n_bindvars; i++) {
+        CDB2SQLQUERY__Bindvalue *bv = bindvars[i];
+        int type = bv->type;
+        int vlen = bv->value.len;
+        memcpy(key + off, &type, sizeof(int));
+        off += sizeof(int);
+        memcpy(key + off, &vlen, sizeof(int));
+        off += sizeof(int);
+        if (vlen > 0) {
+            memcpy(key + off, bv->value.data, vlen);
+            off += vlen;
+        }
+    }
+
+    *key_out = key;
+    *key_len_out = total;
+    *hash_out = fnv1a_64(key, total);
+    return 0;
+}
+
+static struct result_cache_entry *result_cache_lookup(uint64_t hash, const char *key, int key_len)
+{
+    int bucket = hash % RESULT_CACHE_BUCKETS;
+    struct result_cache_entry *e = g_result_cache.buckets[bucket];
+    while (e) {
+        if (e->key_hash == hash && e->cache_key_len == key_len && memcmp(e->cache_key, key, key_len) == 0) {
+            return e;
+        }
+        e = e->next;
+    }
+    return NULL;
+}
+
+static void result_cache_free_entry(struct result_cache_entry *entry)
+{
+    if (!entry)
+        return;
+    free(entry->dbname);
+    free(entry->cache_key);
+    free(entry->first_buf);
+    for (int i = 0; i < entry->n_rows; i++)
+        free(entry->rows[i].buf);
+    free(entry->rows);
+    free(entry);
+}
+
+static void result_cache_evict_oldest(void)
+{
+    struct result_cache_entry *oldest = NULL;
+    struct result_cache_entry **oldest_prev = NULL;
+
+    for (int i = 0; i < RESULT_CACHE_BUCKETS; i++) {
+        struct result_cache_entry **pp = &g_result_cache.buckets[i];
+        while (*pp) {
+            if (!oldest || (*pp)->created_at < oldest->created_at) {
+                oldest = *pp;
+                oldest_prev = pp;
+            }
+            pp = &(*pp)->next;
+        }
+    }
+    if (oldest && oldest_prev) {
+        *oldest_prev = oldest->next;
+        result_cache_free_entry(oldest);
+        g_result_cache.n_entries--;
+#ifdef CDB2API_TEST
+        num_result_cache_evicts++;
+#endif
+    }
+}
+
+static void result_cache_insert(struct result_cache_entry *entry)
+{
+    if (g_result_cache.n_entries >= g_result_cache.max_entries)
+        result_cache_evict_oldest();
+
+    int bucket = entry->key_hash % RESULT_CACHE_BUCKETS;
+
+    /* Remove existing entry with same key if present */
+    struct result_cache_entry **pp = &g_result_cache.buckets[bucket];
+    while (*pp) {
+        if ((*pp)->key_hash == entry->key_hash && (*pp)->cache_key_len == entry->cache_key_len &&
+            memcmp((*pp)->cache_key, entry->cache_key, entry->cache_key_len) == 0) {
+            struct result_cache_entry *old = *pp;
+            *pp = old->next;
+            result_cache_free_entry(old);
+            g_result_cache.n_entries--;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+
+    entry->next = g_result_cache.buckets[bucket];
+    g_result_cache.buckets[bucket] = entry;
+    g_result_cache.n_entries++;
+#ifdef CDB2API_TEST
+    num_result_cache_stores++;
+#endif
+}
+
+static void result_cache_invalidate_db(const char *dbname)
+{
+    int removed = 0;
+    for (int i = 0; i < RESULT_CACHE_BUCKETS; i++) {
+        struct result_cache_entry **pp = &g_result_cache.buckets[i];
+        while (*pp) {
+            if (strcmp((*pp)->dbname, dbname) == 0) {
+                struct result_cache_entry *old = *pp;
+                *pp = old->next;
+                result_cache_free_entry(old);
+                g_result_cache.n_entries--;
+                removed++;
+            } else {
+                pp = &(*pp)->next;
+            }
+        }
+    }
+#ifdef CDB2API_TEST
+    num_result_cache_invalidations += removed;
+#endif
+}
+
+static void result_cache_clear(void)
+{
+    for (int i = 0; i < RESULT_CACHE_BUCKETS; i++) {
+        struct result_cache_entry *e = g_result_cache.buckets[i];
+        while (e) {
+            struct result_cache_entry *next = e->next;
+            result_cache_free_entry(e);
+            e = next;
+        }
+        g_result_cache.buckets[i] = NULL;
+    }
+    g_result_cache.n_entries = 0;
+}
+
+static void result_cache_abort_capture(cdb2_hndl_tp *hndl)
+{
+    if (!hndl->cache_capturing)
+        return;
+    struct result_cache_row *rows = hndl->cache_capture_rows;
+    if (rows) {
+        for (int i = 0; i < hndl->cache_capture_n_rows; i++)
+            free(rows[i].buf);
+        free(rows);
+    }
+    free(hndl->cache_capture_first_buf);
+    free(hndl->cache_capture_key);
+    hndl->cache_capturing = 0;
+    hndl->cache_capture_rows = NULL;
+    hndl->cache_capture_n_rows = 0;
+    hndl->cache_capture_capacity = 0;
+    hndl->cache_capture_first_buf = NULL;
+    hndl->cache_capture_first_buf_len = 0;
+    hndl->cache_capture_key = NULL;
+    hndl->cache_capture_key_len = 0;
+}
+
+static int result_cache_is_eligible(cdb2_hndl_tp *hndl, const char *sql)
+{
+    struct cdb2_cache_policy *p = hndl->cache_policies;
+    while (p) {
+        int plen = strlen(p->sql_pattern);
+        if (strncmp(sql, p->sql_pattern, plen) == 0)
+            return 1;
+        p = p->next;
+    }
+    /* If global cache is enabled but no per-handle policy matches,
+       still eligible (global mode caches all reads) */
+    if (g_result_cache.max_entries > 0 && !hndl->cache_policies)
+        return 1;
+    return 0;
+}
+
+static int result_cache_get_ttl(cdb2_hndl_tp *hndl, const char *sql)
+{
+    struct cdb2_cache_policy *p = hndl->cache_policies;
+    while (p) {
+        int plen = strlen(p->sql_pattern);
+        if (strncmp(sql, p->sql_pattern, plen) == 0)
+            return p->ttl_sec;
+        p = p->next;
+    }
+    return g_result_cache.default_ttl_sec;
+}
+
+int cdb2_set_cache_policy(cdb2_hndl_tp *hndl, const char *sql_pattern, int ttl_sec)
+{
+    struct cdb2_cache_policy *p = malloc(sizeof(*p));
+    if (!p)
+        return -1;
+    p->sql_pattern = strdup(sql_pattern);
+    if (!p->sql_pattern) {
+        free(p);
+        return -1;
+    }
+    p->ttl_sec = ttl_sec;
+    p->next = hndl->cache_policies;
+    hndl->cache_policies = p;
+    return 0;
+}
+
+int cdb2_clear_cache_policies(cdb2_hndl_tp *hndl)
+{
+    struct cdb2_cache_policy *p = hndl->cache_policies;
+    while (p) {
+        struct cdb2_cache_policy *next = p->next;
+        free(p->sql_pattern);
+        free(p);
+        p = next;
+    }
+    hndl->cache_policies = NULL;
+    return 0;
+}
+
+/* --- End result cache helpers --- */
 
 static int init_once_has_run = 0;
 #ifdef CDB2API_TEST
@@ -4395,6 +4700,7 @@ static int cdb2_convert_error_code(int rc)
 
 static void clear_responses(cdb2_hndl_tp *hndl)
 {
+    result_cache_abort_capture(hndl);
     free_raw_response(hndl);
     if (hndl->lastresponse) {
         cdb2__sqlresponse__free_unpacked(hndl->lastresponse, hndl->allocator);
@@ -4953,6 +5259,29 @@ static int cdb2_next_record_int(cdb2_hndl_tp *hndl, int shouldretry)
     int rc;
     int num_retry = 0;
 
+    /* Result cache: replay rows from cache */
+    if (hndl->cache_replaying) {
+        struct result_cache_entry *ce = hndl->cache_replay_entry;
+        if (hndl->cache_replay_row_idx >= ce->n_rows) {
+            hndl->cache_replaying = 0;
+            hndl->cache_replay_entry = NULL;
+            PRINT_AND_RETURN_OK(CDB2_OK_DONE);
+        }
+        struct result_cache_row *row = &ce->rows[hndl->cache_replay_row_idx];
+        if (hndl->lastresponse) {
+            cdb2__sqlresponse__free_unpacked(hndl->lastresponse, hndl->allocator);
+            if (hndl->protobuf_size)
+                hndl->protobuf_offset = 0;
+        }
+        free((void *)hndl->last_buf);
+        hndl->last_buf = malloc(row->len);
+        memcpy(hndl->last_buf, row->buf, row->len);
+        hndl->lastresponse = cdb2__sqlresponse__unpack(hndl->allocator, row->len, hndl->last_buf);
+        hndl->cache_replay_row_idx++;
+        hndl->rows_read++;
+        PRINT_AND_RETURN_OK(CDB2_OK);
+    }
+
     if (hndl->ack)
         ack(hndl);
 
@@ -5062,6 +5391,22 @@ retry_next_record:
         }
 
         hndl->rows_read++;
+
+        /* Result cache: buffer this row for later insertion */
+        if (hndl->cache_capturing && hndl->lastresponse->error_code == 0) {
+            if (hndl->cache_capture_n_rows >= hndl->cache_capture_capacity) {
+                int new_cap = hndl->cache_capture_capacity ? hndl->cache_capture_capacity * 2 : 16;
+                hndl->cache_capture_rows = realloc(hndl->cache_capture_rows, new_cap * sizeof(struct result_cache_row));
+                hndl->cache_capture_capacity = new_cap;
+            }
+            struct result_cache_row *cr =
+                &((struct result_cache_row *)hndl->cache_capture_rows)[hndl->cache_capture_n_rows];
+            cr->buf = malloc(len);
+            memcpy(cr->buf, hndl->last_buf, len);
+            cr->len = len;
+            hndl->cache_capture_n_rows++;
+        }
+
         if (hndl->in_trans) {
             /* Give the same error for every query until commit/rollback */
             hndl->error_in_trans =
@@ -5070,6 +5415,8 @@ retry_next_record:
 
         debugprint("error_string=%s\n", hndl->lastresponse->error_string);
         rc = cdb2_convert_error_code(hndl->lastresponse->error_code);
+        if (rc != 0 && hndl->cache_capturing)
+            result_cache_abort_capture(hndl);
         PRINT_AND_RETURN_OK(rc);
     }
 
@@ -5092,6 +5439,32 @@ retry_next_record:
             if (hndl->in_trans && (CDB2_SERVER_FEATURES__SKIP_INTRANS_RESULTS ==
                                    hndl->lastresponse->features[ii]))
                 hndl->read_intrans_results = 0;
+        }
+
+        /* Result cache: commit captured rows to global cache */
+        if (hndl->cache_capturing) {
+            hndl->cache_capturing = 0;
+            struct result_cache_entry *entry = calloc(1, sizeof(struct result_cache_entry));
+            if (entry) {
+                entry->key_hash = hndl->cache_capture_key_hash;
+                entry->cache_key = hndl->cache_capture_key;
+                entry->cache_key_len = hndl->cache_capture_key_len;
+                entry->dbname = strdup(hndl->dbname);
+                entry->created_at = time(NULL);
+                entry->ttl_sec = hndl->cache_capture_ttl;
+                entry->first_buf = hndl->cache_capture_first_buf;
+                entry->first_buf_len = hndl->cache_capture_first_buf_len;
+                entry->rows = hndl->cache_capture_rows;
+                entry->n_rows = hndl->cache_capture_n_rows;
+                pthread_mutex_lock(&result_cache_lock);
+                result_cache_insert(entry);
+                pthread_mutex_unlock(&result_cache_lock);
+            } else {
+                result_cache_abort_capture(hndl);
+            }
+            hndl->cache_capture_key = NULL;
+            hndl->cache_capture_rows = NULL;
+            hndl->cache_capture_first_buf = NULL;
         }
 
         PRINT_AND_RETURN_OK(CDB2_OK_DONE);
@@ -5311,6 +5684,12 @@ int cdb2_close(cdb2_hndl_tp *hndl)
         free(hndl->commands);
         hndl->commands = NULL;
     }
+
+    /* Result cache: clean up handle state */
+    result_cache_abort_capture(hndl);
+    cdb2_clear_cache_policies(hndl);
+    hndl->cache_replaying = 0;
+    hndl->cache_replay_entry = NULL;
 
     free(hndl->sql);
 
@@ -6192,6 +6571,58 @@ static int cdb2_run_statement_typed_int(cdb2_hndl_tp *hndl, const char *sql, int
     }
 
     hndl->is_read = is_sql_read(sql);
+
+    /* Result cache: invalidate on writes, check on reads */
+    if (!hndl->is_read && g_result_cache.n_entries > 0) {
+        pthread_mutex_lock(&result_cache_lock);
+        result_cache_invalidate_db(hndl->dbname);
+        pthread_mutex_unlock(&result_cache_lock);
+    }
+
+    if (hndl->is_read && !hndl->in_trans && (g_result_cache.max_entries > 0 || hndl->cache_policies) &&
+        result_cache_is_eligible(hndl, sql)) {
+        uint64_t rc_hash;
+        char *rc_key = NULL;
+        int rc_key_len;
+        if (result_cache_build_key(hndl->dbname, sql, hndl->n_bindvars, hndl->bindvars, &rc_key, &rc_key_len,
+                                   &rc_hash) == 0) {
+            pthread_mutex_lock(&result_cache_lock);
+            struct result_cache_entry *cached = result_cache_lookup(rc_hash, rc_key, rc_key_len);
+            if (cached && (time(NULL) - cached->created_at) < cached->ttl_sec) {
+                /* Cache hit: set up replay */
+                hndl->cache_replaying = 1;
+                hndl->cache_replay_entry = cached;
+                hndl->cache_replay_row_idx = 0;
+                hndl->first_buf = malloc(cached->first_buf_len);
+                memcpy(hndl->first_buf, cached->first_buf, cached->first_buf_len);
+                hndl->firstresponse = cdb2__sqlresponse__unpack(NULL, cached->first_buf_len, hndl->first_buf);
+                hndl->first_record_read = 0;
+                hndl->rows_read = 0;
+                pthread_mutex_unlock(&result_cache_lock);
+                free(rc_key);
+#ifdef CDB2API_TEST
+                num_result_cache_hits++;
+#endif
+                PRINT_AND_RETURN(0);
+            }
+            pthread_mutex_unlock(&result_cache_lock);
+            /* Cache miss: set up capture */
+            hndl->cache_capturing = 1;
+            hndl->cache_capture_key_hash = rc_hash;
+            hndl->cache_capture_key = rc_key;
+            hndl->cache_capture_key_len = rc_key_len;
+            hndl->cache_capture_ttl = result_cache_get_ttl(hndl, sql);
+            hndl->cache_capture_n_rows = 0;
+            hndl->cache_capture_capacity = 0;
+            hndl->cache_capture_rows = NULL;
+            hndl->cache_capture_first_buf = NULL;
+            hndl->cache_capture_first_buf_len = 0;
+#ifdef CDB2API_TEST
+            num_result_cache_misses++;
+#endif
+        }
+    }
+
     struct timeval tv;
     gettimeofday(&tv, NULL);
     hndl->timestampus = ((uint64_t)tv.tv_sec) * 1000000 + tv.tv_usec;
@@ -6653,6 +7084,18 @@ read_record:
     }
 
     debugprint("Received message %d\n", hndl->firstresponse->response_type);
+
+    /* Result cache: capture first_buf (column metadata) */
+    if (hndl->cache_capturing && hndl->firstresponse &&
+        hndl->firstresponse->response_type == RESPONSE_TYPE__COLUMN_NAMES) {
+        hndl->cache_capture_first_buf = malloc(len);
+        if (hndl->cache_capture_first_buf) {
+            memcpy(hndl->cache_capture_first_buf, hndl->first_buf, len);
+            hndl->cache_capture_first_buf_len = len;
+        } else {
+            result_cache_abort_capture(hndl);
+        }
+    }
 
     if (hndl->firstresponse->error_code == CDB2__ERROR_CODE__WRONG_DB && !hndl->in_trans) {
         newsql_disconnect(hndl, hndl->sb, __LINE__);

@@ -33,6 +33,12 @@ int get_num_cache_hits(void);
 int get_num_cache_misses(void);
 int get_num_stale_cache_rejects(void);
 
+int get_num_result_cache_hits(void);
+int get_num_result_cache_misses(void);
+int get_num_result_cache_stores(void);
+int get_num_result_cache_evicts(void);
+int get_num_result_cache_invalidations(void);
+
 void set_fail_next(int);
 void set_fail_read(int);
 void set_fail_reject(int);

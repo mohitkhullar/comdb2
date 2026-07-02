@@ -327,6 +327,9 @@ int cdb2_is_ssl_encrypted(cdb2_hndl_tp *hndl);
 
 char *cdb2_string_escape(cdb2_hndl_tp *hndl, const char *str);
 
+int cdb2_set_cache_policy(cdb2_hndl_tp *hndl, const char *sql_pattern, int ttl_sec);
+int cdb2_clear_cache_policies(cdb2_hndl_tp *hndl);
+
 #if defined __cplusplus
 }
 #endif

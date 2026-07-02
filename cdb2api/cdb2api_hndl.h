@@ -208,5 +208,25 @@ struct cdb2_hndl {
     struct cdb2_stmt_types *stmt_types;
     RETRY_CALLBACK retry_clbk;
     int is_tagged;
+
+    /* Result cache: per-query policy list */
+    struct cdb2_cache_policy *cache_policies;
+
+    /* Result cache: replay state (serving from cache) */
+    int cache_replaying;
+    void *cache_replay_entry;
+    int cache_replay_row_idx;
+
+    /* Result cache: capture state (buffering rows for insertion) */
+    int cache_capturing;
+    void *cache_capture_rows;
+    int cache_capture_n_rows;
+    int cache_capture_capacity;
+    uint8_t *cache_capture_first_buf;
+    int cache_capture_first_buf_len;
+    uint64_t cache_capture_key_hash;
+    char *cache_capture_key;
+    int cache_capture_key_len;
+    int cache_capture_ttl;
 };
 #endif
