@@ -290,6 +290,211 @@ void test_cdb2_string_escape()
 }
 
 
+void test_result_cache_helpers()
+{
+    /* Test fnv1a_64 produces consistent hashes */
+    uint64_t h1 = fnv1a_64("hello", 5);
+    uint64_t h2 = fnv1a_64("hello", 5);
+    uint64_t h3 = fnv1a_64("world", 5);
+    assert(h1 == h2);
+    assert(h1 != h3);
+
+    /* Test cache key building */
+    char *key = NULL;
+    int key_len = 0;
+    uint64_t hash = 0;
+    int rc = result_cache_build_key("mydb", "SELECT 1", 0, NULL,
+                                    &key, &key_len, &hash);
+    assert(rc == 0);
+    assert(key != NULL);
+    assert(key_len == (int)(strlen("mydb") + 1 + strlen("SELECT 1") + 1));
+    assert(hash != 0);
+
+    /* Same inputs produce same key */
+    char *key2 = NULL;
+    int key_len2 = 0;
+    uint64_t hash2 = 0;
+    rc = result_cache_build_key("mydb", "SELECT 1", 0, NULL,
+                                &key2, &key_len2, &hash2);
+    assert(rc == 0);
+    assert(hash == hash2);
+    assert(key_len == key_len2);
+    assert(memcmp(key, key2, key_len) == 0);
+
+    /* Different inputs produce different key */
+    char *key3 = NULL;
+    int key_len3 = 0;
+    uint64_t hash3 = 0;
+    rc = result_cache_build_key("mydb", "SELECT 2", 0, NULL,
+                                &key3, &key_len3, &hash3);
+    assert(rc == 0);
+    assert(hash != hash3);
+
+    free(key);
+    free(key2);
+    free(key3);
+}
+
+void test_result_cache_insert_lookup()
+{
+    /* Enable cache */
+    g_result_cache.max_entries = 64;
+    g_result_cache.default_ttl_sec = 60;
+
+    /* Build a cache entry */
+    struct result_cache_entry *entry = calloc(1, sizeof(*entry));
+    char *key = NULL;
+    int key_len = 0;
+    uint64_t hash = 0;
+    result_cache_build_key("testdb", "SELECT x FROM t", 0, NULL,
+                           &key, &key_len, &hash);
+    entry->key_hash = hash;
+    entry->cache_key = key;
+    entry->cache_key_len = key_len;
+    entry->dbname = strdup("testdb");
+    entry->created_at = time(NULL);
+    entry->ttl_sec = 60;
+    entry->first_buf = NULL;
+    entry->first_buf_len = 0;
+    entry->rows = NULL;
+    entry->n_rows = 0;
+
+    /* Insert */
+    result_cache_insert(entry);
+    assert(g_result_cache.n_entries == 1);
+
+    /* Lookup - should find it */
+    struct result_cache_entry *found =
+        result_cache_lookup(hash, key, key_len);
+    assert(found == entry);
+
+    /* Lookup with different key - should not find */
+    char *key2 = NULL;
+    int key_len2 = 0;
+    uint64_t hash2 = 0;
+    result_cache_build_key("testdb", "SELECT y FROM t", 0, NULL,
+                           &key2, &key_len2, &hash2);
+    found = result_cache_lookup(hash2, key2, key_len2);
+    assert(found == NULL);
+    free(key2);
+
+    /* Invalidate by dbname */
+    result_cache_invalidate_db("testdb");
+    assert(g_result_cache.n_entries == 0);
+    found = result_cache_lookup(hash, key, key_len);
+    assert(found == NULL);
+}
+
+void test_result_cache_eviction()
+{
+    g_result_cache.max_entries = 2;
+    g_result_cache.default_ttl_sec = 60;
+
+    /* Insert 3 entries - should evict oldest */
+    for (int i = 0; i < 3; i++) {
+        char sql[32];
+        snprintf(sql, sizeof(sql), "SELECT %d", i);
+        char *key = NULL;
+        int key_len = 0;
+        uint64_t hash = 0;
+        result_cache_build_key("db", sql, 0, NULL,
+                               &key, &key_len, &hash);
+        struct result_cache_entry *e = calloc(1, sizeof(*e));
+        e->key_hash = hash;
+        e->cache_key = key;
+        e->cache_key_len = key_len;
+        e->dbname = strdup("db");
+        e->created_at = time(NULL) - (3 - i); /* older entries first */
+        e->ttl_sec = 60;
+        e->rows = NULL;
+        e->n_rows = 0;
+        e->first_buf = NULL;
+        e->first_buf_len = 0;
+        result_cache_insert(e);
+    }
+
+    /* Should have 2 entries (evicted the oldest) */
+    assert(g_result_cache.n_entries == 2);
+
+    /* The oldest (SELECT 0) should be gone */
+    char *key = NULL;
+    int key_len = 0;
+    uint64_t hash = 0;
+    result_cache_build_key("db", "SELECT 0", 0, NULL,
+                           &key, &key_len, &hash);
+    assert(result_cache_lookup(hash, key, key_len) == NULL);
+    free(key);
+
+    /* SELECT 2 should still be there */
+    result_cache_build_key("db", "SELECT 2", 0, NULL,
+                           &key, &key_len, &hash);
+    assert(result_cache_lookup(hash, key, key_len) != NULL);
+    free(key);
+
+    /* Cleanup */
+    result_cache_clear();
+    assert(g_result_cache.n_entries == 0);
+}
+
+void test_result_cache_policy()
+{
+    cdb2_hndl_tp hndl;
+    memset(&hndl, 0, sizeof(hndl));
+    strcpy(hndl.dbname, "testdb");
+
+    /* No policies - not eligible (unless global enabled with no policies) */
+    g_result_cache.max_entries = 0;
+    assert(result_cache_is_eligible(&hndl, "SELECT 1") == 0);
+
+    /* Add a policy */
+    cdb2_set_cache_policy(&hndl, "SELECT val FROM ref", 30);
+    assert(result_cache_is_eligible(&hndl, "SELECT val FROM ref WHERE k=1") == 1);
+    assert(result_cache_is_eligible(&hndl, "SELECT other FROM t") == 0);
+
+    /* TTL from policy */
+    assert(result_cache_get_ttl(&hndl, "SELECT val FROM ref WHERE k=1") == 30);
+    assert(result_cache_get_ttl(&hndl, "SELECT other") == 60);
+
+    /* Clear policies */
+    cdb2_clear_cache_policies(&hndl);
+    assert(hndl.cache_policies == NULL);
+    assert(result_cache_is_eligible(&hndl, "SELECT val FROM ref") == 0);
+
+    /* Global enable without per-handle policies */
+    g_result_cache.max_entries = 64;
+    assert(result_cache_is_eligible(&hndl, "SELECT anything") == 1);
+    g_result_cache.max_entries = 0;
+}
+
+void test_result_cache_abort_capture()
+{
+    cdb2_hndl_tp hndl;
+    memset(&hndl, 0, sizeof(hndl));
+
+    /* Simulate in-progress capture */
+    hndl.cache_capturing = 1;
+    hndl.cache_capture_capacity = 2;
+    hndl.cache_capture_n_rows = 2;
+    hndl.cache_capture_rows = malloc(2 * sizeof(struct result_cache_row));
+    struct result_cache_row *rows = hndl.cache_capture_rows;
+    rows[0].buf = malloc(10);
+    rows[0].len = 10;
+    rows[1].buf = malloc(20);
+    rows[1].len = 20;
+    hndl.cache_capture_first_buf = malloc(5);
+    hndl.cache_capture_first_buf_len = 5;
+    hndl.cache_capture_key = strdup("somekey");
+    hndl.cache_capture_key_len = 7;
+
+    /* Abort should free everything */
+    result_cache_abort_capture(&hndl);
+    assert(hndl.cache_capturing == 0);
+    assert(hndl.cache_capture_rows == NULL);
+    assert(hndl.cache_capture_first_buf == NULL);
+    assert(hndl.cache_capture_key == NULL);
+    assert(hndl.cache_capture_n_rows == 0);
+}
+
 int main(int argc, char *argv[])
 {
     int rc = 0;
@@ -306,6 +511,12 @@ int main(int argc, char *argv[])
     test_cdb2_hndl_set_max_retries();
 
     test_cdb2_set_comdb2db_config();
+
+    test_result_cache_helpers();
+    test_result_cache_insert_lookup();
+    test_result_cache_eviction();
+    test_result_cache_policy();
+    test_result_cache_abort_capture();
 
     test_read_comdb2db_cfg();
     test_get_config_file();
