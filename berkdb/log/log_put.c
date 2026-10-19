@@ -957,10 +957,11 @@ __write_inmemory_buffer_lk(dblp, bytes_written, write_all)
 	return 0;
 }
 
-int
-__write_inmemory_buffer(dblp, write_all)
+static int
+__write_inmemory_buffer_int(dblp, write_all, sync)
 	DB_LOG *dblp;
 	int write_all;
+	int sync;
 {
 	LOG *lp;
 	int ret;
@@ -974,11 +975,19 @@ __write_inmemory_buffer(dblp, write_all)
 		Pthread_mutex_unlock(&log_write_lk);
 	} else {
 		if ((ret = __log_write(dblp, dblp->bufp, (u_int32_t)lp->b_off)) == 0) {
-			if (!gbl_wal_osync)
+			if (sync && !gbl_wal_osync)
 				ret = __os_fsync(dblp->dbenv, dblp->lfhp);
 		}
 	}
 	return ret;
+}
+
+int
+__write_inmemory_buffer(dblp, write_all)
+	DB_LOG *dblp;
+	int write_all;
+{
+	return __write_inmemory_buffer_int(dblp, write_all, 1);
 }
 
 
@@ -1558,7 +1567,11 @@ flush:	MUTEX_LOCK(dbenv, flush_mutexp);
 	f_lsn = __log_lwr_lsn( dblp );
 	wrote_inmem = 0;
 	if (!__inmemory_buf_empty(lp) && log_compare(&flush_lsn, &f_lsn) >= 0){
-		ret = __write_inmemory_buffer( dblp, 1 );
+		/* Don't sync here: we hold the region lock, which would block
+		 * every other log writer for the length of the sync.  The
+		 * fsync below covers this write, after the lock is released,
+		 * so concurrent commits can share it. */
+		ret = __write_inmemory_buffer_int( dblp, 1, 0 );
 		wrote_inmem = 1;
 
 		if (ret != 0) {

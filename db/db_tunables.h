@@ -986,6 +986,14 @@ REGISTER_TUNABLE("optimize_repdb_truncate",
                  "Enables use of optimized repdb truncate code. (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_optimize_truncate_repdb,
                  READONLY | NOARG | READEARLY, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("handoff_spin_us",
+                 "Block processor threads and sql threads waiting for a commit result poll this long before "
+                 "sleeping (Default: 0)",
+                 TUNABLE_INTEGER, &gbl_handoff_spin_us, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("inline_local_commit",
+                 "Sql threads run the commit of a transaction on this node themselves instead of handing it to a "
+                 "block processor thread (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_inline_local_commit, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("osql_bkoff_netsend", NULL, TUNABLE_INTEGER,
                  &gbl_osql_bkoff_netsend, READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("osql_bkoff_netsend_lmt", NULL, TUNABLE_INTEGER,

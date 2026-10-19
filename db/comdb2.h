@@ -1499,6 +1499,7 @@ struct ireq {
     int comdbg_flags;
     int64_t timestamp;
     void (*ipc_sndbak)(struct ireq *, int rc, int len);
+    int sql_thread_commit; /* run by the sql thread that sent it (inline_local_commit) */
     // note: these are transient: they are valid only while the ireq is
     // being handled
     void *authdata;

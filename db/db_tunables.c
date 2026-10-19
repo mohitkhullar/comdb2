@@ -197,6 +197,8 @@ extern int portmux_port;
 extern int g_osql_max_trans;
 extern int gbl_osql_max_throttle_sec;
 extern int gbl_osql_random_restart;
+extern int gbl_inline_local_commit;
+extern int gbl_handoff_spin_us;
 extern int gbl_toblock_random_deadlock_trans;
 extern int gbl_toblock_random_verify_error;
 extern int diffstat_thresh;

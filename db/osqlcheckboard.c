@@ -36,6 +36,9 @@
 #include "comdb2uuid.h"
 #include "net_types.h"
 #include "logmsg.h"
+#include "comdb2_atomic.h"
+
+extern int gbl_handoff_spin_us;
 
 /* delete this after comdb2_api.h changes makes it through */
 #define SQLHERR_MASTER_QUEUE_FULL -108
@@ -454,6 +457,14 @@ static int wait_till_max_wait_or_timeout(osql_sqlthr_t *entry, int max_wait,
             break;
         }
         tm_recov_deadlk = comdb2_time_epochms() - tm_recov_deadlk;
+
+        /* Look for the result for a while before sleeping: a sleeping thread takes a while to wake up */
+        if (gbl_handoff_spin_us > 0) {
+            uint64_t end = comdb2_time_epochus() + gbl_handoff_spin_us;
+            while (!__atomic_load_n(&entry->done, __ATOMIC_ACQUIRE) &&
+                   !__atomic_load_n(&entry->master_changed, __ATOMIC_ACQUIRE) && comdb2_time_epochus() < end)
+                cpu_relax();
+        }
 
         Pthread_mutex_lock(&entry->mtx);
 

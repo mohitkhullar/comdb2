@@ -104,6 +104,10 @@ ${TESTSBUILDDIR}/cdb2api_comdb2db_timeout
 [[ $? -ne 0 ]] && echo "cdb2api_comdb2db_timeout - fail" && exit 1
 echo 'cdb2api_comdb2db_timeout - pass'
 
+${TESTSBUILDDIR}/cdb2api_discovery_negative_cache
+[[ $? -ne 0 ]] && echo "cdb2api_discovery_negative_cache - fail" && exit 1
+echo 'cdb2api_discovery_negative_cache - pass'
+
 ${TESTSBUILDDIR}/cdb2api_localcache_systable ${DBNAME}
 [[ $? -ne 0 ]] && echo "cdb2api_localcache_systable - fail" && exit 1
 echo 'cdb2api_localcache_systable - pass'

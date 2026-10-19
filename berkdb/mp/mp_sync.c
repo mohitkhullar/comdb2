@@ -569,6 +569,26 @@ int gbl_ref_sync_wait_txnlist = 0;
 void collect_txnids(DB_ENV *dbenv, u_int32_t *txnarray, int max, int *count);
 int still_running(DB_ENV *dbenv, u_int32_t *txnarray, int count);
 
+/*
+ * Would writing this page force a log sync?  s_lsn is read unlocked as in
+ * __log_flush_int: it only moves forward, so at worst we skip a page that
+ * no longer needed the sync.
+ */
+static int
+page_needs_log_sync(DB_ENV *dbenv, BH *bhp)
+{
+	MPOOLFILE *mfp = bhp->mpf;
+	DB_LSN lsn;
+	LOG *lp;
+
+	if (!LOGGING_ON(dbenv) || mfp->lsn_off == -1 ||
+	    F_ISSET(bhp, BH_CALLPGIN))
+		return (0);
+	memcpy(&lsn, bhp->buf + mfp->lsn_off, sizeof(DB_LSN));
+	lp = ((DB_LOG *)dbenv->lg_handle)->reginfo.primary;
+	return (log_compare(&lsn, &lp->s_lsn) >= 0);
+}
+
 static void
 trickle_do_work(struct thdpool *thdpool, void *work, void *thddata, int thd_op)
 {
@@ -712,6 +732,19 @@ trickle_do_work(struct thdpool *thdpool, void *work, void *thddata, int thd_op)
 				--remaining;
 				bharray[i].track_hp = NULL;
 			}
+			continue;
+		}
+
+		/*
+		 * Trickle is best effort: skip pages changed since the last log
+		 * sync.  Writing one would sync the log while holding the page
+		 * locked, stalling everyone who needs it, and a hot page is
+		 * dirtied again right away anyway.
+		 */
+		if (op == DB_SYNC_TRICKLE && page_needs_log_sync(dbenv, bhp)) {
+			MUTEX_UNLOCK(dbenv, mutexp);
+			--remaining;
+			bharray[i].track_hp = NULL;
 			continue;
 		}
 

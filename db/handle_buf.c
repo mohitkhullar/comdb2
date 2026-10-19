@@ -42,6 +42,8 @@
 #include "intern_strings.h"
 #include "logmsg.h"
 #include "transactionstate_systable.h"
+#include "reqlog.h"
+#include "comdb2_atomic.h"
 
 #ifdef MONITOR_STACK
 #include "comdb2_pthread_create.h"
@@ -51,6 +53,22 @@ extern int free_it(void *obj, void *arg);
 extern void destroy_hash(hash_t *h, int (*free_func)(void *, void *));
 
 pthread_key_t thd_info_key;
+
+int gbl_inline_local_commit = 1;
+int gbl_handoff_spin_us = 0;
+static pthread_key_t inline_thdinfo_key; /* thread_info of sql threads running their own commits */
+static __thread struct reqlogger *inline_logger;
+
+static void free_inline_thdinfo(void *arg)
+{
+    struct thread_info *thdinfo = arg;
+    delete_constraint_table(thdinfo->ct_add_table);
+    delete_constraint_table(thdinfo->ct_del_table);
+    delete_constraint_table(thdinfo->ct_add_index);
+    hash_free(thdinfo->ct_add_table_genid_hash);
+    pool_free(thdinfo->ct_add_table_genid_pool);
+    free(thdinfo);
+}
 
 void (*comdb2_ipc_sndbak)(int *, int) = 0;
 
@@ -210,6 +228,7 @@ int thd_init(void)
     listc_init(&busy, offsetof(struct thd, lnk));
     bdb_set_io_control(thd_io_start, thd_io_complete);
     Pthread_key_create(&thd_info_key, free);
+    Pthread_key_create(&inline_thdinfo_key, free_inline_thdinfo);
     Pthread_attr_setstacksize(&attr, 4096 * 1024);
     logmsg(LOGMSG_INFO, "thd_init: thread subsystem initialized\n");
     return 0;
@@ -666,6 +685,15 @@ static void *thd_req(void *vthd)
 
                 listc_atl(&idle, thd);
 
+                /* Look for work for a while before sleeping: a sleeping thread takes a while to wake up */
+                if (gbl_handoff_spin_us > 0) {
+                    Pthread_mutex_unlock(&lock);
+                    uint64_t end = comdb2_time_epochus() + gbl_handoff_spin_us;
+                    while (!__atomic_load_n(&thd->iq, __ATOMIC_ACQUIRE) && comdb2_time_epochus() < end)
+                        cpu_relax();
+                    Pthread_mutex_lock(&lock);
+                }
+
                 rc = clock_gettime(CLOCK_REALTIME, &ts);
                 if (rc != 0) {
                     logmsg(LOGMSG_ERROR, "thd_req:clock_gettime bad rc %d:%s\n", rc,
@@ -675,13 +703,13 @@ static void *thd_req(void *vthd)
 
                 rc = 0;
                 int ii = 0;
-                do { /* wait gbl_thd_linger seconds via one second increments */
-                    ts.tv_sec += 1;
-                    ii++;
-                    /*waitft thread will deposit a request in thd->iq*/
-                    rc = pthread_cond_timedwait(&thd->wakeup, &lock, &ts);
-                } while ((thd->iq == 0 && rc == 0) ||
-                         (rc == ETIMEDOUT && ii < gbl_thd_linger && !db_is_exiting()));
+                if (thd->iq == 0)
+                    do { /* wait gbl_thd_linger seconds via one second increments */
+                        ts.tv_sec += 1;
+                        ii++;
+                        /*waitft thread will deposit a request in thd->iq*/
+                        rc = pthread_cond_timedwait(&thd->wakeup, &lock, &ts);
+                    } while ((thd->iq == 0 && rc == 0) || (rc == ETIMEDOUT && ii < gbl_thd_linger && !db_is_exiting()));
 
                 if (rc != 0 && rc != ETIMEDOUT) {
                     logmsg(LOGMSG_ERROR, "thd_req:pthread_cond_timedwait failed:%s\n",
@@ -726,6 +754,76 @@ static void *thd_req(void *vthd)
         }
         truncate_defered_index_tbl();
     } while (1);
+}
+
+/* On the master, a sql thread commits its own transaction instead of handing it to a thd_req thread and
+ * waiting to be woken up.  Schema changes and distributed transactions still go to thd_req.  Inline commits
+ * count against the writer thread limit, and only run when nothing is queued. */
+static int take_inline_commit_slot(struct ireq *iq, osql_sess_t *sorese, int qtype, char *frommach)
+{
+    if (!gbl_inline_local_commit || !sorese || qtype != REQ_OFFLOAD || frommach != gbl_myhostname ||
+        thedb->master != gbl_myhostname || sorese->scs.count || sorese->is_participant || sorese->is_coordinator ||
+        !is_req_write(iq->opcode) || thrman_get_type(thrman_self()) != THRTYPE_SQLENGINEPOOL)
+        return 0;
+    int ok = 0;
+    LOCK(&lock)
+    {
+        int maxw = gbl_maxwthreads - gbl_maxwthreadpenalty;
+        if ((ok = q_reqs.count == 0 && write_thd_count - iothreads < (maxw < 1 ? 1 : maxw)))
+            write_thd_count++;
+    }
+    UNLOCK(&lock);
+    return ok;
+}
+
+static int handle_ireq_inline(struct ireq *iq)
+{
+    struct thread_info *thdinfo = pthread_getspecific(inline_thdinfo_key);
+    if (!thdinfo) {
+        thdinfo = calloc(1, sizeof(struct thread_info));
+        thdinfo->ct_add_table = create_constraint_table();
+        thdinfo->ct_del_table = create_constraint_table();
+        thdinfo->ct_add_index = create_constraint_index_table();
+        thdinfo->ct_add_table_genid_hash = hash_init(sizeof(unsigned long long));
+        thdinfo->ct_add_table_genid_pool = pool_setalloc_init(sizeof(unsigned long long), 0, malloc, free);
+        Pthread_setspecific(inline_thdinfo_key, thdinfo);
+        inline_logger = reqlog_alloc();
+    }
+    void *saved_thdinfo = pthread_getspecific(thd_info_key);
+    Pthread_setspecific(thd_info_key, thdinfo);
+
+    iq->startus = comdb2_time_epochus();
+    iq->reqlogger = inline_logger;
+    iq->sql_thread_commit = 1;
+    handle_ireq(iq);
+
+    /* as thd_req does after a request; init_ireq_legacy zeroes the rest when iq is reused */
+    if (iq->usedb && iq->ixused >= 0 && iq->ixused < iq->usedb->nix && iq->usedb->ixuse)
+        iq->usedb->ixuse[iq->ixused] += iq->ixstepcnt;
+    if (iq->dbglog_file)
+        cdb2buf_close(iq->dbglog_file);
+    free(iq->nwrites);
+    if (iq->vfy_genid_hash)
+        hash_free(iq->vfy_genid_hash);
+    if (iq->vfy_genid_pool)
+        pool_free(iq->vfy_genid_pool);
+    if (iq->vfy_idx_hash)
+        destroy_hash(iq->vfy_idx_hash, free_it);
+    LOCK(&lock)
+    {
+        write_thd_count--;
+        pool_relablk(p_reqs, iq);
+    }
+    UNLOCK(&lock);
+
+    truncate_constraint_table(thdinfo->ct_add_table);
+    truncate_constraint_table(thdinfo->ct_del_table);
+    truncate_constraint_table(thdinfo->ct_add_index);
+    hash_clear(thdinfo->ct_add_table_genid_hash);
+    pool_clear(thdinfo->ct_add_table_genid_pool);
+    truncate_defered_index_tbl();
+    Pthread_setspecific(thd_info_key, saved_thdinfo);
+    return 0;
 }
 
 /* sndbak error code &  return resources.*/
@@ -1101,6 +1199,8 @@ int handle_buf_main2(struct dbenv *dbenv, COMDB2BUF *sb, const uint8_t *p_buf, c
             iq->comdbg_flags |= COMDBG_FLAG_FROM_LE;
         iq->authdata = authdata;
 
+        if (take_inline_commit_slot(iq, sorese, qtype, frommach))
+            return handle_ireq_inline(iq);
 
         Pthread_mutex_lock(&lock);
         {

@@ -147,6 +147,9 @@ static int cdb2_use_bmsd = 1;
 static int cdb2_use_bmsd_set_from_env = 0;
 static int cdb2_comdb2db_fallback = 1;
 static int cdb2_comdb2db_fallback_set_from_env = 0;
+/* Seconds to remember that comdb2db has no entry for a db/tier; 0 disables */
+static int cdb2_discovery_negative_cache_ttl = 30;
+static int cdb2_discovery_negative_cache_ttl_set_from_env = 0;
 static int cdb2_use_optional_identity = 1;
 static int cdb2_use_optional_identity_set_from_env = 0;
 static int cdb2_fail_on_identity_failure = 1;
@@ -1710,6 +1713,8 @@ static void read_comdb2db_environment_cfg(cdb2_hndl_tp *hndl, const char *comdb2
         process_env_var_str_on_off("COMDB2_FEATURE_USE_BMSD", &cdb2_use_bmsd, &cdb2_use_bmsd_set_from_env);
         process_env_var_str_on_off("COMDB2_FEATURE_COMDB2DB_FALLBACK", &cdb2_comdb2db_fallback,
                                    &cdb2_comdb2db_fallback_set_from_env);
+        process_env_var_int("COMDB2_CONFIG_DISCOVERY_NEGATIVE_CACHE_TTL", &cdb2_discovery_negative_cache_ttl,
+                            &cdb2_discovery_negative_cache_ttl_set_from_env);
         process_env_var_str_on_off("COMDB2_FEATURE_USE_OPTIONAL_IDENTITY", &cdb2_use_optional_identity,
                                    &cdb2_use_optional_identity_set_from_env);
         process_env_var_int("COMDB2_FEATURE_FAIL_ON_IDENTITY_FAILURE", &cdb2_fail_on_identity_failure,
@@ -2032,6 +2037,11 @@ static void read_comdb2db_cfg(cdb2_hndl_tp *hndl, COMDB2BUF *s, const char *comd
                     hndl->comdb2db_timeout = atoi(tok);
                 else if (tok)
                     COMDB2DB_TIMEOUT = atoi(tok);
+            } else if (!cdb2_discovery_negative_cache_ttl_set_from_env &&
+                       strcasecmp("discovery_negative_cache_ttl", tok) == 0) {
+                tok = strtok_r(NULL, " :,", &last);
+                if (tok)
+                    cdb2_discovery_negative_cache_ttl = atoi(tok);
             } else if (!cdb2_sockpool_recv_timeoutms_set_from_env &&
                        (strcasecmp("sockpool_recv_timeoutms", tok) == 0)) {
                 tok = strtok_r(NULL, " :,", &last);
@@ -8085,6 +8095,59 @@ static inline void only_read_config(cdb2_hndl_tp *hndl, struct cluster_info *c, 
     set_cdb2_timeouts(hndl);
 }
 
+/* Remembers db/tier pairs that comdb2db has no entry for, so a client that keeps
+ * opening a nonexistent db doesn't send a discovery query to comdb2db every time. */
+#define DISCOVERY_NEGATIVE_CACHE_SIZE 64
+static struct {
+    char dbname[DBNAME_LEN];
+    char type[TYPE_LEN];
+    time_t expires;
+} discovery_negative_cache[DISCOVERY_NEGATIVE_CACHE_SIZE];
+static pthread_mutex_t discovery_negative_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int discovery_negative_cache_find(const char *dbname, const char *type)
+{
+    if (cdb2_discovery_negative_cache_ttl <= 0)
+        return 0;
+    int found = 0;
+    time_t now = time(NULL);
+    pthread_mutex_lock(&discovery_negative_cache_lock);
+    for (int i = 0; i < DISCOVERY_NEGATIVE_CACHE_SIZE; i++) {
+        if (discovery_negative_cache[i].expires > now && strcmp(discovery_negative_cache[i].dbname, dbname) == 0 &&
+            strcasecmp(discovery_negative_cache[i].type, type) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&discovery_negative_cache_lock);
+    return found;
+}
+
+static void discovery_negative_cache_add(const char *dbname, const char *type)
+{
+    if (cdb2_discovery_negative_cache_ttl <= 0)
+        return;
+    time_t now = time(NULL);
+    pthread_mutex_lock(&discovery_negative_cache_lock);
+    /* Reuse an entry for the same db/tier, else the one expiring first (expired or empty entries included) */
+    int slot = 0;
+    for (int i = 0; i < DISCOVERY_NEGATIVE_CACHE_SIZE; i++) {
+        if (strcmp(discovery_negative_cache[i].dbname, dbname) == 0 &&
+            strcasecmp(discovery_negative_cache[i].type, type) == 0) {
+            slot = i;
+            break;
+        }
+        if (discovery_negative_cache[i].expires < discovery_negative_cache[slot].expires)
+            slot = i;
+    }
+    strncpy(discovery_negative_cache[slot].dbname, dbname, DBNAME_LEN - 1);
+    discovery_negative_cache[slot].dbname[DBNAME_LEN - 1] = '\0';
+    strncpy(discovery_negative_cache[slot].type, type, TYPE_LEN - 1);
+    discovery_negative_cache[slot].type[TYPE_LEN - 1] = '\0';
+    discovery_negative_cache[slot].expires = now + cdb2_discovery_negative_cache_ttl;
+    pthread_mutex_unlock(&discovery_negative_cache_lock);
+}
+
 static int cdb2_get_dbhosts(cdb2_hndl_tp *hndl)
 {
 #ifdef CDB2API_TEST
@@ -8180,6 +8243,14 @@ static int cdb2_get_dbhosts(cdb2_hndl_tp *hndl)
         }
     }
 
+    if (hndl->num_hosts == 0 && hndl->num_shards == 0 && discovery_negative_cache_find(hndl->dbname, hndl->type)) {
+        snprintf(hndl->errstr, sizeof(hndl->errstr),
+                 "cdb2_get_dbhosts: comdb2db has no entry of db %s of cluster type %s (cached).", hndl->dbname,
+                 hndl->type);
+        rc = -1;
+        goto after_callback;
+    }
+
     if (!hndl->max_call_time)
         set_max_call_time(hndl);
 
@@ -8251,6 +8322,7 @@ retry:
                 "cdb2_get_dbhosts: comdb2db has no entry of "
                 "db %s of cluster type %s.",
                 hndl->dbname, hndl->type);
+        discovery_negative_cache_add(hndl->dbname, hndl->type);
         rc = -1;
         goto after_callback;
     }

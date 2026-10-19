@@ -6493,8 +6493,8 @@ cleanup:
     logmsg(LOGMSG_DEBUG, "%s cleanup rc %d did_replay:%d fromline:%d\n",
            __func__, outrc, did_replay, fromline);
 #endif
-    // legacy_sndbak is being done from an SQL thread, which will hold a curtran lock, so skip this check
-    if (!iq->ipc_sndbak)
+    // legacy_sndbak and inline commits are done from an SQL thread, which will hold a curtran lock, so skip this check
+    if (!iq->ipc_sndbak && !iq->sql_thread_commit)
         bdb_checklock(thedb->bdb_env);
 
     iq->timings.req_finished = osql_log_time();
